@@ -19,14 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: github/codeql-action/init@v3
         with:
           languages: go
           build-mode: manual
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
 
       - name: Build
         run: go build ./...
