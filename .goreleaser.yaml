@@ -26,9 +26,10 @@ builds:
 
 archives:
   - id: binaries
-    builds:
+    ids:
       - ask4me
-    format: binary
+    formats:
+      - binary
     name_template: ask4me-{{ .Os }}-{{ .Arch }}{{ if eq .Os "windows" }}.exe{{ end }}
 
 checksum:
