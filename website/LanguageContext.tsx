@@ -11,7 +11,7 @@ const translations = {
       docs: "Docs"
     },
     hero: {
-      version: "v0.1.3 Release",
+      version: "v0.1.4 Release",
       titleStart: "The Simplest",
       titleHighlight: "Human-in-the-Loop",
       titleEnd: "Service",
@@ -76,7 +76,7 @@ const translations = {
       docs: "文档"
     },
     hero: {
-      version: "v0.1.3 发布",
+      version: "v0.1.4 发布",
       titleStart: "极简的",
       titleHighlight: "Human-in-the-Loop",
       titleEnd: "服务",

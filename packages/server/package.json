@@ -1,6 +1,6 @@
 {
   "name": "ask4me-server",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Download and run Ask4Me server binary with guided setup",
   "keywords": [
     "ask4me",

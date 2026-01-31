@@ -86,7 +86,21 @@ export async function ensureBinary({ packageRoot }) {
   const url = getDownloadURL({ version: pkgJson.version });
 
   const tmp = path.join(os.tmpdir(), `ask4me-server-${Date.now()}-${Math.random().toString(16).slice(2)}${process.platform === "win32" ? ".exe" : ""}`);
-  const bodyStream = await fetchStream(url);
+  let bodyStream;
+  try {
+    bodyStream = await fetchStream(url);
+  } catch (err) {
+    if (process.platform === "win32") {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("HTTP 404") && !url.endsWith(".exe.exe")) {
+        bodyStream = await fetchStream(`${url}.exe`);
+      } else {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
+  }
   await pipeline(bodyStream, fs.createWriteStream(tmp));
 
   const expected = process.env.ASK4ME_SERVER_BINARY_SHA256;

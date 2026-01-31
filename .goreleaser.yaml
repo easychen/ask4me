@@ -30,7 +30,7 @@ archives:
       - ask4me
     formats:
       - binary
-    name_template: ask4me-{{ .Os }}-{{ .Arch }}{{ if eq .Os "windows" }}.exe{{ end }}
+    name_template: ask4me-{{ .Os }}-{{ .Arch }}
 
 checksum:
   name_template: checksums.txt
