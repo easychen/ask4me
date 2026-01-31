@@ -2,6 +2,12 @@
   "name": "ask4me-monorepo",
   "private": true,
   "license": "MIT",
+  "scripts": {
+    "publish:sdk": "npm publish -w sdk-js --access public",
+    "publish:server": "npm publish -w packages/server --access public",
+    "publish:cli": "npm publish -w packages/cli --access public",
+    "publish:all": "npm run publish:sdk && npm run publish:server && npm run publish:cli"
+  },
   "workspaces": [
     "sdk-js",
     "packages/*"

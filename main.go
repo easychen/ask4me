@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	serverchan_sdk "github.com/easychen/serverchan-sdk-golang"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
@@ -1119,11 +1120,9 @@ func (s *server) sendNotification(ctx context.Context, requestID, title, body, i
 
 	sendkey := strings.TrimSpace(s.cfg.ServerChanSendKey)
 	if sendkey != "" {
-		form := url.Values{}
-		form.Set("title", title)
-		form.Set("desp", msg)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://sctapi.ftqq.com/%s.send", url.PathEscape(sendkey)), strings.NewReader(form.Encode()))
+		resp, err := serverchan_sdk.ScSend(sendkey, title, msg, &serverchan_sdk.ScSendOptions{
+			Tags: "ask4me",
+		})
 		if err != nil {
 			ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
 				"channel": "serverchan",
@@ -1134,52 +1133,17 @@ func (s *server) sendNotification(ctx context.Context, requestID, title, body, i
 			_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
 			return
 		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-		client := &http.Client{Timeout: 10 * time.Second}
-		res, err := client.Do(req)
-		if err != nil {
+		if resp != nil && resp.Code != 0 {
+			output, _ := json.Marshal(resp)
 			ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
 				"channel": "serverchan",
-				"error":   err.Error(),
+				"error":   fmt.Sprintf("serverchan code %d: %s", resp.Code, resp.Message),
+				"output":  truncate(string(output), 2000),
 			})
 			_ = s.persistTerminalAware(ctx, ev)
 			s.hub.setTerminal(ev)
 			_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
 			return
-		}
-		defer res.Body.Close()
-
-		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-			ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
-				"channel": "serverchan",
-				"error":   fmt.Sprintf("http %d", res.StatusCode),
-				"output":  truncate(string(b), 2000),
-			})
-			_ = s.persistTerminalAware(ctx, ev)
-			s.hub.setTerminal(ev)
-			_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
-			return
-		}
-
-		type serverChanResp struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		}
-		if b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20)); len(b) > 0 {
-			var cr serverChanResp
-			if err := json.Unmarshal(b, &cr); err == nil && cr.Code != 0 {
-				ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
-					"channel": "serverchan",
-					"error":   fmt.Sprintf("serverchan code %d: %s", cr.Code, cr.Message),
-					"output":  truncate(string(b), 2000),
-				})
-				_ = s.persistTerminalAware(ctx, ev)
-				s.hub.setTerminal(ev)
-				_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
-				return
-			}
 		}
 
 		ev := s.mustNewEvent(ctx, requestID, "notify.sent", map[string]any{

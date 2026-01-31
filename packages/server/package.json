@@ -1,6 +1,6 @@
 {
   "name": "ask4me-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Download and run Ask4Me server binary with guided setup",
   "keywords": [
     "ask4me",
@@ -22,7 +22,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "ask4me-server": "./bin/ask4me-server.js"
+    "ask4me-server": "bin/ask4me-server.js"
   },
   "scripts": {
     "postinstall": "node ./scripts/postinstall.js"

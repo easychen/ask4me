@@ -3,6 +3,7 @@ module ask4me
 go 1.22
 
 require (
+	github.com/easychen/serverchan-sdk-golang v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.35.0
 )
