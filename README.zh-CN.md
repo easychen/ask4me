@@ -8,7 +8,7 @@ Ask4Me 是一个自建的小服务：你通过 API 发起一个“请求”，�
 
 ## 一个请求示例（curl）
 
-`mcd` 必须要加。不加 `mcd` 虽然看起来能跑通（能收到通知），但用户没有任何可操作的部分（没按钮/没输入框），因此也就拿不到有意义的数据。
+请提供 `mcd` 或 `jsonforms.schema` 其中之一。不加任何交互控件虽然也能收到通知，但用户没有任何可提交的部分（没按钮/没输入框），因此也就拿不到有意义的数据。
 
 ```bash
 curl -sS --max-time 120 \
@@ -92,7 +92,7 @@ curl -sS --max-time 120 \
 
 说明：
 
-- `mcd` 必须要加。不加 `mcd` 用户虽然能收到通知，但没有任何可提交的控件。
+- 请提供 `mcd` 或 `jsonforms.schema`。如果两者都没提供，服务端会降级成一个默认的 OK 按钮。
 - `--max-time 120` 是一个示例值：避免你在终端里“无限等”。如果 120 秒内你还没点开通知并提交，curl 会超时退出；你可以用 `request_id` 重新发起“续接等待”（见下文）。
 - nonStream 模式下，响应不会返回交互链接（interaction_url）；交互链接会通过通知渠道发到你手机/客户端。
 
@@ -104,6 +104,51 @@ curl -sS --max-time 120 \
   "last_event_type": "user.submitted",
   "data": { "action": "ok", "text": "" },
   "last_event_id": "evt_xxx"
+}
+```
+
+### 1b) 使用 JSON Forms（schema 驱动表单）
+
+`jsonforms` 仅支持 POST JSON（不支持通过 GET query 参数传入）。当提供 `jsonforms.schema` 时，交互页会渲染表单并忽略 `mcd`。
+
+```bash
+curl -sS --max-time 120 \
+  -X POST 'http://localhost:8080/v1/ask' \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "JSON Forms Demo",
+    "body": "请填写表单。",
+    "jsonforms": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "age": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["name"]
+      },
+      "uischema": {
+        "type": "VerticalLayout",
+        "elements": [
+          { "type": "Control", "scope": "#/properties/name" },
+          { "type": "Control", "scope": "#/properties/age" }
+        ]
+      },
+      "data": { "age": 18 },
+      "submit_label": "提交"
+    },
+    "expires_in_seconds": 600
+  }'
+```
+
+当用户提交表单，终态事件 `user.submitted` 的 `data` 类似：
+
+```json
+{
+  "action": "",
+  "text": "",
+  "payload": { "name": "Alice", "age": 18 }
 }
 ```
 
@@ -161,7 +206,7 @@ curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
 
 ## 参数一个一个加（nonStream）
 
-下面用 GET 方式演示“逐步加参数”，并用 `--data-urlencode` 避免手写 URL encode。注意：在加入 `mcd` 之前，请求是不可交互的（用户没法提交），因此也就拿不到有意义的数据。
+下面用 GET 方式演示“逐步加参数”，并用 `--data-urlencode` 避免手写 URL encode。注意：GET 模式下可交互主要依赖 `mcd`（JSON Forms 仅支持 POST）。
 
 ### 1) 加 title
 

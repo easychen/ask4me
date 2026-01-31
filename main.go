@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -211,6 +212,7 @@ func newStore(db *sql.DB) (*store, error) {
 			request_id TEXT PRIMARY KEY,
 			action TEXT,
 			text TEXT,
+			payload_json TEXT,
 			created_at INTEGER NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS events (
@@ -228,14 +230,72 @@ func newStore(db *sql.DB) (*store, error) {
 			return nil, err
 		}
 	}
+	if err := ensureTableColumns(db, "requests", map[string]string{
+		"jsonforms_schema_json":   "TEXT",
+		"jsonforms_uischema_json": "TEXT",
+		"jsonforms_data_json":     "TEXT",
+		"jsonforms_submit_label":  "TEXT",
+		"jsonforms_renderer":      "TEXT",
+	}); err != nil {
+		return nil, err
+	}
+	if err := ensureTableColumns(db, "answers", map[string]string{
+		"payload_json": "TEXT",
+	}); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
-func (s *store) createRequest(ctx context.Context, reqID, title, body, mcd, status string, expiresAt time.Time) error {
+func ensureTableColumns(db *sql.DB, table string, columns map[string]string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for name, typ := range columns {
+		if _, ok := existing[name]; ok {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + typ); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *store) createRequest(
+	ctx context.Context,
+	reqID, title, body, mcd, status string,
+	expiresAt time.Time,
+	jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer sql.NullString,
+) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO requests(request_id,title,body,mcd,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO requests(
+			request_id,title,body,mcd,status,expires_at,created_at,updated_at,
+			jsonforms_schema_json,jsonforms_uischema_json,jsonforms_data_json,jsonforms_submit_label,jsonforms_renderer
+		) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?)`,
 		reqID, title, body, mcd, status, expiresAt.Unix(), now, now,
+		jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer,
 	)
 	return err
 }
@@ -280,10 +340,10 @@ func (s *store) verifyToken(ctx context.Context, reqID, tokenHash string) (bool,
 	return true, nil
 }
 
-func (s *store) insertAnswer(ctx context.Context, reqID, action, text string) error {
+func (s *store) insertAnswer(ctx context.Context, reqID, action, text string, payloadJSON sql.NullString) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO answers(request_id,action,text,created_at) VALUES(?,?,?,?)`,
-		reqID, nullIfEmpty(action), nullIfEmpty(text), time.Now().Unix(),
+		`INSERT INTO answers(request_id,action,text,payload_json,created_at) VALUES(?,?,?,?,?)`,
+		reqID, nullIfEmpty(action), nullIfEmpty(text), payloadJSON, time.Now().Unix(),
 	)
 	return err
 }
@@ -388,10 +448,17 @@ func (s *store) getLatestEventByTypes(ctx context.Context, reqID string, types [
 }
 
 type askRequest struct {
-	Title            string `json:"title"`
-	Body             string `json:"body"`
-	MCD              string `json:"mcd"`
-	ExpiresInSeconds int    `json:"expires_in_seconds"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	MCD       string `json:"mcd"`
+	JsonForms *struct {
+		Schema      json.RawMessage `json:"schema"`
+		UISchema    json.RawMessage `json:"uischema"`
+		Data        json.RawMessage `json:"data"`
+		SubmitLabel string          `json:"submit_label"`
+		Renderer    string          `json:"renderer"`
+	} `json:"jsonforms"`
+	ExpiresInSeconds int `json:"expires_in_seconds"`
 }
 
 type buttonSpec struct {
@@ -485,6 +552,7 @@ type htmlData struct {
 	Done      bool
 	Token     string
 	RequestID string
+	JsonForms bool
 }
 
 var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
@@ -500,7 +568,11 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
     button{padding:10px 14px;border-radius:10px;border:1px solid #d0d7de;background:#fff;cursor:pointer;margin:6px 6px 0 0;}
     button:hover{background:#f6f8fa;}
     input[type="text"]{width:100%;padding:10px;border:1px solid #d0d7de;border-radius:10px;}
+    #app label{display:block;margin:12px 0 6px;font-weight:600;}
+    #app input,#app select,#app textarea{width:100%;padding:10px;border:1px solid #d0d7de;border-radius:10px;box-sizing:border-box;}
+    #app input[type="checkbox"],#app input[type="radio"]{width:auto;padding:0;border-radius:0;}
     .ok{padding:12px;border:1px solid #2da44e;border-radius:10px;background:#dafbe1;}
+    .err{padding:12px;border:1px solid #d1242f;border-radius:10px;background:#ffebe9;color:#24292f;}
   </style>
 </head>
 <body>
@@ -510,27 +582,148 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
   {{if .Done}}
     <div class="ok">Submitted.</div>
   {{else}}
-    {{if .Buttons}}
+    {{if .JsonForms}}
       <div class="row">
-        {{range .Buttons}}
-          <form method="post" style="display:inline" action="./submit?k={{urlquery $.Token}}">
-            <input type="hidden" name="action" value="{{.Value}}"/>
-            <button type="submit">{{.Label}}</button>
-          </form>
-        {{end}}
-      </div>
-    {{end}}
-
-    {{if .Input}}
-      <div class="row">
-        <form method="post" action="./submit?k={{urlquery .Token}}">
-          <label>{{.Input.Label}}</label>
-          <div style="height:8px"></div>
-          <input type="text" name="text" value=""/>
-          <div style="height:10px"></div>
-          <button type="submit">{{.Input.Submit}}</button>
+        <div id="app">Loading...</div>
+        <div id="err" class="row" style="display:none"></div>
+        <noscript>
+          <div class="err">JavaScript is required to render this form.</div>
+        </noscript>
+        <form id="submitForm" method="post" action="./submit?k={{urlquery .Token}}">
+          <input type="hidden" name="payload_json" id="payload_json" value=""/>
+          <button id="submitBtn" type="submit">Submit</button>
         </form>
       </div>
+      <script type="module">
+        (async () => {
+          const elApp = document.getElementById("app");
+          const elErr = document.getElementById("err");
+          const elSubmitBtn = document.getElementById("submitBtn");
+          const elPayload = document.getElementById("payload_json");
+          const form = document.getElementById("submitForm");
+
+          function showError(message) {
+            if (!elErr) return;
+            elErr.className = "err";
+            elErr.textContent = message;
+            elErr.style.display = "block";
+          }
+
+          try {
+            const ReactMod = await import("https://esm.sh/react@19.2.4?target=es2020");
+            const React = ReactMod.default ?? ReactMod;
+            const { useEffect, useMemo, useState } = ReactMod;
+
+            const { createRoot } = await import("https://esm.sh/react-dom@19.2.4/client?target=es2020");
+            const { JsonForms } = await import("https://esm.sh/@jsonforms/react@3.5.1?target=es2020");
+            const { vanillaRenderers, vanillaCells } = await import("https://esm.sh/@jsonforms/vanilla-renderers@3.5.1?target=es2020");
+
+            function App() {
+              const [schema, setSchema] = useState(null);
+              const [uischema, setUiSchema] = useState(undefined);
+              const [data, setData] = useState({});
+              const [errors, setErrors] = useState([]);
+              const [submitLabel, setSubmitLabel] = useState("Submit");
+
+              useEffect(() => {
+                (async () => {
+                  try {
+                    const res = await fetch("./spec?k={{urlquery .Token}}", { headers: { Accept: "application/json" } });
+                    if (!res.ok) {
+                      showError("Failed to load form spec.");
+                      return;
+                    }
+                    const spec = await res.json();
+                    if (!spec || typeof spec !== "object" || !spec.schema) {
+                      showError("Invalid form spec.");
+                      return;
+                    }
+                    setSchema(spec.schema);
+                    if (spec.uischema) setUiSchema(spec.uischema);
+                    if (spec.data !== undefined && spec.data !== null) setData(spec.data);
+                    if (typeof spec.submit_label === "string" && spec.submit_label.trim()) {
+                      setSubmitLabel(spec.submit_label.trim());
+                    }
+                  } catch {
+                    showError("Failed to load form spec.");
+                  }
+                })();
+              }, []);
+
+              useEffect(() => {
+                if (elSubmitBtn) elSubmitBtn.textContent = submitLabel;
+              }, [submitLabel]);
+
+              const hasErrors = useMemo(() => Array.isArray(errors) && errors.length > 0, [errors]);
+              useEffect(() => {
+                if (elSubmitBtn) elSubmitBtn.disabled = hasErrors;
+              }, [hasErrors]);
+
+              useEffect(() => {
+                if (!elPayload) return;
+                try {
+                  elPayload.value = JSON.stringify(data ?? {});
+                } catch {
+                  elPayload.value = "{}";
+                }
+              }, [data]);
+
+              if (!schema) {
+                return React.createElement("div", null, "Loading...");
+              }
+
+              return React.createElement(JsonForms, {
+                schema,
+                uischema,
+                data,
+                renderers: vanillaRenderers,
+                cells: vanillaCells,
+                onChange: ({ data, errors }) => {
+                  if (data !== undefined) setData(data);
+                  if (Array.isArray(errors)) setErrors(errors);
+                }
+              });
+            }
+
+            if (form) {
+              form.addEventListener("submit", () => {
+                try {
+                  if (!elPayload.value) elPayload.value = "{}";
+                } catch {}
+              });
+            }
+
+            if (elApp) createRoot(elApp).render(React.createElement(App));
+          } catch (e) {
+            const message = e && typeof e === "object" && "message" in e ? String(e.message) : "";
+            showError("Failed to load form renderer." + (message ? " " + message : ""));
+            if (elApp) elApp.textContent = "";
+          }
+        })();
+      </script>
+    {{else}}
+      {{if .Buttons}}
+        <div class="row">
+          {{range .Buttons}}
+            <form method="post" style="display:inline" action="./submit?k={{urlquery $.Token}}">
+              <input type="hidden" name="action" value="{{.Value}}"/>
+              <button type="submit">{{.Label}}</button>
+            </form>
+          {{end}}
+        </div>
+      {{end}}
+
+      {{if .Input}}
+        <div class="row">
+          <form method="post" action="./submit?k={{urlquery .Token}}">
+            <label>{{.Input.Label}}</label>
+            <div style="height:8px"></div>
+            <input type="text" name="text" value=""/>
+            <div style="height:10px"></div>
+            <button type="submit">{{.Input.Submit}}</button>
+          </form>
+        </div>
+      {{end}}
     {{end}}
   {{end}}
 </body>
@@ -699,7 +892,7 @@ func parseAskRequestFromHTTP(r *http.Request) (askRequest, error) {
 	return ar, nil
 }
 
-func normalizeAskRequest(ar *askRequest) int {
+func normalizeAskRequest(ar *askRequest) (int, error) {
 	ar.Title = strings.TrimSpace(ar.Title)
 	ar.Body = strings.TrimSpace(ar.Body)
 	ar.MCD = strings.TrimSpace(ar.MCD)
@@ -709,23 +902,61 @@ func normalizeAskRequest(ar *askRequest) int {
 	if ar.Body == "" {
 		ar.Body = "Please respond."
 	}
-	if ar.MCD == "" {
+	if ar.MCD == "" && (ar.JsonForms == nil || len(bytes.TrimSpace(ar.JsonForms.Schema)) == 0) {
 		ar.MCD = ":::buttons\n- [OK](ok)\n:::"
+	}
+	if ar.JsonForms != nil && len(bytes.TrimSpace(ar.JsonForms.Schema)) > 0 {
+		var v any
+		if err := json.Unmarshal(ar.JsonForms.Schema, &v); err != nil {
+			return 0, errors.New("invalid jsonforms.schema")
+		}
+		if _, ok := v.(map[string]any); !ok {
+			return 0, errors.New("jsonforms.schema must be an object")
+		}
+		ar.JsonForms.SubmitLabel = strings.TrimSpace(ar.JsonForms.SubmitLabel)
+		if ar.JsonForms.SubmitLabel == "" {
+			ar.JsonForms.SubmitLabel = "Submit"
+		}
+		ar.JsonForms.Renderer = strings.TrimSpace(ar.JsonForms.Renderer)
+		if ar.JsonForms.Renderer == "" {
+			ar.JsonForms.Renderer = "vanilla"
+		}
 	}
 	expiresIn := ar.ExpiresInSeconds
 	if expiresIn <= 0 {
 		expiresIn = 0
 	}
-	return expiresIn
+	return expiresIn, nil
 }
 
 func (s *server) createAskWithRequestID(ctx context.Context, requestID string, ar askRequest, sendTo http.ResponseWriter) (askRequest, time.Time, string, string, error) {
-	expiresIn := normalizeAskRequest(&ar)
+	expiresIn, err := normalizeAskRequest(&ar)
+	if err != nil {
+		return askRequest{}, time.Time{}, "", "", err
+	}
 	if expiresIn <= 0 {
 		expiresIn = s.cfg.DefaultExpiresInSeconds
 	}
 	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt); err != nil {
+
+	var schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer sql.NullString
+	if ar.JsonForms != nil && len(bytes.TrimSpace(ar.JsonForms.Schema)) > 0 {
+		schemaJSON = sql.NullString{String: string(bytes.TrimSpace(ar.JsonForms.Schema)), Valid: true}
+		if len(bytes.TrimSpace(ar.JsonForms.UISchema)) > 0 {
+			uiSchemaJSON = sql.NullString{String: string(bytes.TrimSpace(ar.JsonForms.UISchema)), Valid: true}
+		}
+		if len(bytes.TrimSpace(ar.JsonForms.Data)) > 0 {
+			dataJSON = sql.NullString{String: string(bytes.TrimSpace(ar.JsonForms.Data)), Valid: true}
+		}
+		if strings.TrimSpace(ar.JsonForms.SubmitLabel) != "" {
+			submitLabel = sql.NullString{String: strings.TrimSpace(ar.JsonForms.SubmitLabel), Valid: true}
+		}
+		if strings.TrimSpace(ar.JsonForms.Renderer) != "" {
+			renderer = sql.NullString{String: strings.TrimSpace(ar.JsonForms.Renderer), Valid: true}
+		}
+	}
+
+	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt, schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer); err != nil {
 		return askRequest{}, time.Time{}, "", "", err
 	}
 
@@ -772,6 +1003,10 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, nil)
 		if err != nil {
+			if strings.Contains(err.Error(), "jsonforms") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "failed to create request", http.StatusInternalServerError)
 			return
 		}
@@ -809,6 +1044,10 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 			}
 			ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, nil)
 			if err != nil {
+				if strings.Contains(err.Error(), "jsonforms") {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
 				http.Error(w, "failed to create request", http.StatusInternalServerError)
 				return
 			}
@@ -884,6 +1123,10 @@ func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 
 		ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, w)
 		if err != nil {
+			if strings.Contains(err.Error(), "jsonforms") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "failed to create request", http.StatusInternalServerError)
 			return
 		}
@@ -921,6 +1164,10 @@ func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, w)
 			if err != nil {
+				if strings.Contains(err.Error(), "jsonforms") {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
 				http.Error(w, "failed to create request", http.StatusInternalServerError)
 				return
 			}
@@ -1267,6 +1514,52 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 2 && parts[1] == "spec" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer sql.NullString
+		err = s.db.db.QueryRowContext(
+			r.Context(),
+			`SELECT jsonforms_schema_json, jsonforms_uischema_json, jsonforms_data_json, jsonforms_submit_label, jsonforms_renderer FROM requests WHERE request_id=?`,
+			requestID,
+		).Scan(&schemaJSON, &uiSchemaJSON, &dataJSON, &submitLabel, &renderer)
+		if err != nil || !schemaJSON.Valid || strings.TrimSpace(schemaJSON.String) == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		type jsonformsSpecResponse struct {
+			Schema      json.RawMessage `json:"schema"`
+			UISchema    json.RawMessage `json:"uischema,omitempty"`
+			Data        json.RawMessage `json:"data,omitempty"`
+			SubmitLabel string          `json:"submit_label,omitempty"`
+			Renderer    string          `json:"renderer,omitempty"`
+		}
+
+		resp := jsonformsSpecResponse{
+			Schema: json.RawMessage(schemaJSON.String),
+		}
+		if uiSchemaJSON.Valid && strings.TrimSpace(uiSchemaJSON.String) != "" {
+			resp.UISchema = json.RawMessage(uiSchemaJSON.String)
+		}
+		if dataJSON.Valid && strings.TrimSpace(dataJSON.String) != "" {
+			resp.Data = json.RawMessage(dataJSON.String)
+		}
+		if submitLabel.Valid {
+			resp.SubmitLabel = submitLabel.String
+		}
+		if renderer.Valid {
+			resp.Renderer = renderer.String
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	if len(parts) == 2 && parts[1] == "submit" {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1282,11 +1575,23 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 		}
 		action := strings.TrimSpace(r.FormValue("action"))
 		text := strings.TrimSpace(r.FormValue("text"))
-		if action == "" && text == "" {
+		payloadJSON := strings.TrimSpace(r.FormValue("payload_json"))
+		var payload any
+		if payloadJSON != "" {
+			if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+				http.Error(w, "invalid payload_json", http.StatusBadRequest)
+				return
+			}
+		}
+		if action == "" && text == "" && payloadJSON == "" {
 			http.Error(w, "empty submission", http.StatusBadRequest)
 			return
 		}
-		if err := s.db.insertAnswer(r.Context(), requestID, action, text); err != nil {
+		var payloadToStore sql.NullString
+		if payloadJSON != "" {
+			payloadToStore = sql.NullString{String: payloadJSON, Valid: true}
+		}
+		if err := s.db.insertAnswer(r.Context(), requestID, action, text, payloadToStore); err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				http.Redirect(w, r, "./?k="+url.QueryEscape(tokenPlain), http.StatusSeeOther)
 				return
@@ -1296,10 +1601,14 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.db.markTokenUsed(r.Context(), requestID, tokenHash)
 		_ = s.db.updateRequestStatus(r.Context(), requestID, "submitted")
-		ev := s.mustNewEvent(r.Context(), requestID, "user.submitted", map[string]any{
+		data := map[string]any{
 			"action": action,
 			"text":   text,
-		})
+		}
+		if payloadJSON != "" {
+			data["payload"] = payload
+		}
+		ev := s.mustNewEvent(r.Context(), requestID, "user.submitted", data)
 		_ = s.persistTerminalAware(r.Context(), ev)
 		s.hub.setTerminal(ev)
 		http.Redirect(w, r, "./?k="+url.QueryEscape(tokenPlain), http.StatusSeeOther)
@@ -1312,12 +1621,21 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var title, body, mcd string
-	err = s.db.db.QueryRowContext(r.Context(), `SELECT title, body, mcd FROM requests WHERE request_id=?`, requestID).Scan(&title, &body, &mcd)
+	var schemaJSON sql.NullString
+	err = s.db.db.QueryRowContext(
+		r.Context(),
+		`SELECT title, body, mcd, jsonforms_schema_json FROM requests WHERE request_id=?`,
+		requestID,
+	).Scan(&title, &body, &mcd, &schemaJSON)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	spec := parseMCD(mcd)
+	useJSONForms := schemaJSON.Valid && strings.TrimSpace(schemaJSON.String) != ""
+	var spec mcdSpec
+	if !useJSONForms {
+		spec = parseMCD(mcd)
+	}
 	done := status == "submitted" || status == "expired"
 
 	if status != "submitted" && status != "expired" {
@@ -1333,6 +1651,7 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 		Done:      done,
 		Token:     tokenPlain,
 		RequestID: requestID,
+		JsonForms: useJSONForms,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = pageTpl.Execute(w, data)

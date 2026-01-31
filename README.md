@@ -8,7 +8,7 @@ Conceptually, this is Human-in-the-Loop: it might be one of the simplest Human-i
 
 ## One-request demo (curl)
 
-`mcd` is required. Without `mcd`, the user will receive a notification but won’t have anything to click/type, so you won’t get meaningful data back.
+Provide either `mcd` or `jsonforms.schema`. Without any controls, the user will receive a notification but won’t have anything to submit.
 
 ```bash
 curl -sS --max-time 120 \
@@ -92,7 +92,7 @@ curl -sS --max-time 120 \
 
 Notes:
 
-- `mcd` is required. Without it, the user receives a notification but has no controls to submit anything.
+- Provide either `mcd` or `jsonforms.schema`. If both are omitted, the server falls back to a default OK button.
 - `--max-time 120` is just an example to avoid waiting forever in your terminal. If you don’t open the notification and submit within 120 seconds, curl exits with a timeout. You can resume waiting with `request_id` (see below).
 - In nonStream mode the response does not include `interaction_url`; the interaction link is delivered via your notification channel.
 
@@ -104,6 +104,51 @@ Example response (returned after terminal state):
   "last_event_type": "user.submitted",
   "data": { "action": "ok", "text": "" },
   "last_event_id": "evt_xxx"
+}
+```
+
+### 1b) POST with JSON Forms (schema-driven form)
+
+`jsonforms` is POST-only (it is not supported via GET query params). If `jsonforms.schema` is present, the interaction page will render the form and ignore `mcd`.
+
+```bash
+curl -sS --max-time 120 \
+  -X POST 'http://localhost:8080/v1/ask' \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "JSON Forms Demo",
+    "body": "Please fill the form.",
+    "jsonforms": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "age": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["name"]
+      },
+      "uischema": {
+        "type": "VerticalLayout",
+        "elements": [
+          { "type": "Control", "scope": "#/properties/name" },
+          { "type": "Control", "scope": "#/properties/age" }
+        ]
+      },
+      "data": { "age": 18 },
+      "submit_label": "Submit"
+    },
+    "expires_in_seconds": 600
+  }'
+```
+
+When the user submits the form, the terminal event `user.submitted` contains `data` like:
+
+```json
+{
+  "action": "",
+  "text": "",
+  "payload": { "name": "Alice", "age": 18 }
 }
 ```
 
@@ -161,7 +206,7 @@ curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
 
 ## Add parameters step by step (nonStream)
 
-The examples below use GET to show incremental parameters and use `--data-urlencode` to avoid manual URL encoding. Note that `mcd` is what makes the request actionable; without `mcd`, the user has nothing to click/type and you won’t get meaningful data back.
+The examples below use GET to show incremental parameters and use `--data-urlencode` to avoid manual URL encoding. Note that `mcd` is what makes the request actionable in GET mode (JSON Forms is POST-only).
 
 ### 1) Add title
 
