@@ -1,74 +1,24 @@
 # Ask4Me
 
-Ask4Me 是一个自建的小服务：你通过 API 发起一个“请求”，服务端把交互链接推送到你的通知渠道（Server酱 / Apprise）。你在手机或浏览器里点开链接，按按钮或输入文字提交后，发起请求的那条 HTTP 长连接会拿到最终结果（JSON 或 SSE）。
+> English | [中文](README.zh-CN.md)
 
-本仓库包含：
+Ask4Me is a self-hosted service: you send a “request” via API, the server pushes an interaction link to your notification channel (ServerChan / Apprise). You open the link on your phone or in a browser, click a button or type text to submit, and the original HTTP long-poll request receives the final result (JSON or SSE).
 
-- Go 版 server（二进制名：`ask4me`）
-- JavaScript SDK：`ask4me-sdk`（目录：`sdk-js/`）
-- JavaScript CLI：`ask4me-cli`（目录：`packages/cli/`）
-- Node 封装的 server 启动器：`ask4me-server`（目录：`packages/server/`，用于下载/启动二进制）
+Conceptually, this is Human-in-the-Loop: it might be one of the simplest Human-in-the-Loop setups you can self-host.
 
-## 多平台二进制
+## One-request demo (curl)
 
-推荐从 GitHub Releases 下载对应平台的二进制（由 GoReleaser 产出），或使用 `ask4me-server` 自动下载并启动。
-
-## 启动 Server
-
-### 1) 准备配置（.env）
-
-复制一份示例配置：
+`mcd` is required. Without `mcd`, the user will receive a notification but won’t have anything to click/type, so you won’t get meaningful data back.
 
 ```bash
-cp .env.example .env
-```
-
-至少需要：
-
-- `ASK4ME_BASE_URL`：外部可访问的 base URL，用于拼接交互链接（会发到通知里）
-- `ASK4ME_API_KEY`：API 鉴权 key
-- 通知渠道二选一（否则请求会很快以 `notify.failed` 结束）：
-  - `ASK4ME_SERVERCHAN_SENDKEY`
-  - 或 `ASK4ME_APPRISE_URLS`
-- `ASK4ME_TERMINAL_CACHE_SECONDS`：终态结果的内存缓存时间（秒）。当客户端 nonStream/SSE 长连接中途断开时，可在这段时间内用同一个 `request_id` 再请求一次拿到终态结果；也用于 SSE 订阅者退出后的短期回查。
-
-### 2) 启动
-
-推荐使用 `ask4me-server` 自动下载/启动：
-
-```bash
-npm install -g ask4me-server
-ask4me-server --config ./.env
-```
-
-或直接运行已下载/已编译的 `ask4me`：
-
-```bash
-./ask4me -config ./.env
-```
-
-启动后默认监听 `:8080`（可用 `ASK4ME_LISTEN_ADDR` 修改）。
-
-## 最简单用法：nonStream 模式 + 裸请求（curl）
-
-nonStream 是默认模式：不带 `stream=true` 时，`/v1/ask` 会一直阻塞，直到用户在网页端提交或请求过期，然后一次性返回 JSON。
-
-### 1) POST 裸请求（推荐）
-
-```bash
-curl -sS --max-time 40 \
+curl -sS --max-time 120 \
   -X POST 'http://localhost:8080/v1/ask' \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
-  -d '{}'
+  -d '{"title":"Ask4Me Demo","body":"Click a button to respond.","mcd":":::buttons\n- [OK](ok)\n- [Later](later)\n:::"}'
 ```
 
-说明：
-
-- `--max-time 40` 是一个示例值：避免你在终端里“无限等”。如果 40 秒内你还没点开通知并提交，curl 会超时退出；你可以用 `request_id` 重新发起“续接等待”（见下文）。
-- nonStream 模式下，响应不会返回交互链接（interaction_url）；交互链接会通过通知渠道发到你手机/客户端。
-
-返回示例（终态后返回）：
+You will receive a notification with an interaction link. Open it and click one of the buttons, then this curl request returns:
 
 ```json
 {
@@ -79,26 +29,107 @@ curl -sS --max-time 40 \
 }
 ```
 
-`last_event_type` 可能的终态值：
+This repository includes:
 
-- `user.submitted`：用户提交成功（按钮或输入）
-- `request.expired`：到期未提交
-- `notify.failed`：通知发送失败（通常是没配置通知渠道或渠道异常）
+- Go server (binary name: `ask4me`)
+- JavaScript SDK: `ask4me-sdk` (directory: `sdk-js/`)
+- JavaScript CLI: `ask4me-cli` (directory: `packages/cli/`)
+- Node server launcher: `ask4me-server` (directory: `packages/server/`, used to download/start the binary)
 
-### 2) GET 裸请求（无 header 环境）
+## Multi-platform binaries
 
-如果你所在环境不方便设置 `Authorization: Bearer ...` 头，可以用 GET 并在 URL 上带 `key`：
+Recommended: download the binary for your platform from GitHub Releases (built by GoReleaser), or use `ask4me-server` to download and start it automatically.
+
+## Start the server
+
+### 1) Prepare config (.env)
+
+Copy the example config:
 
 ```bash
-curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
-  --data-urlencode 'key=change-me'
+cp .env.example .env
 ```
 
-安全提示：URL 参数可能被代理/日志记录；能用 POST + Authorization 时优先用 POST。
+At minimum you need:
 
-### 3) 超时后续接等待（用 request_id）
+- `ASK4ME_BASE_URL`: externally accessible base URL used to build interaction links (sent via notifications)
+- `ASK4ME_API_KEY`: API auth key
+- One of the notification channels (otherwise requests will quickly end with `notify.failed`):
+  - `ASK4ME_SERVERCHAN_SENDKEY`
+  - or `ASK4ME_APPRISE_URLS`
+- `ASK4ME_TERMINAL_CACHE_SECONDS`: in-memory cache TTL (seconds) for the terminal result. If the client nonStream/SSE connection drops mid-way, you can reconnect with the same `request_id` within this TTL to fetch the terminal result; also used for short-term SSE lookups after subscribers disconnect.
 
-当你用 `--max-time 40` 这类客户端超时后，可以用 `request_id` 续接等待：
+### 2) Start
+
+Recommended: use `ask4me-server` to download/start automatically:
+
+```bash
+npm install -g ask4me-server
+ask4me-server --config ./.env
+```
+
+Or run the downloaded/built `ask4me` directly:
+
+```bash
+./ask4me -config ./.env
+```
+
+By default it listens on `:8080` (override with `ASK4ME_LISTEN_ADDR`).
+
+## Quickstart: nonStream mode + raw requests (curl)
+
+nonStream is the default: without `stream=true`, `/v1/ask` blocks until the user submits in the web UI or the request expires, then returns a single JSON response.
+
+### 1) POST (recommended)
+
+```bash
+curl -sS --max-time 120 \
+  -X POST 'http://localhost:8080/v1/ask' \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Ask4Me Demo","body":"Click a button to respond.","mcd":":::buttons\n- [OK](ok)\n- [Later](later)\n:::"}'
+```
+
+Notes:
+
+- `mcd` is required. Without it, the user receives a notification but has no controls to submit anything.
+- `--max-time 120` is just an example to avoid waiting forever in your terminal. If you don’t open the notification and submit within 120 seconds, curl exits with a timeout. You can resume waiting with `request_id` (see below).
+- In nonStream mode the response does not include `interaction_url`; the interaction link is delivered via your notification channel.
+
+Example response (returned after terminal state):
+
+```json
+{
+  "request_id": "req_xxx",
+  "last_event_type": "user.submitted",
+  "data": { "action": "ok", "text": "" },
+  "last_event_id": "evt_xxx"
+}
+```
+
+Possible terminal `last_event_type` values:
+
+- `user.submitted`: user submitted successfully (button or input)
+- `request.expired`: expired without submission
+- `notify.failed`: notification delivery failed (usually missing config or channel error)
+
+### 2) GET (environments without headers)
+
+If you can’t easily set the `Authorization: Bearer ...` header, use GET with a `key` query param:
+
+```bash
+curl -sS --max-time 120 -G 'http://localhost:8080/v1/ask' \
+  --data-urlencode 'key=change-me' \
+  --data-urlencode 'title=Ask4Me Demo' \
+  --data-urlencode 'body=Click a button to respond.' \
+  --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::'
+```
+
+Security note: query params may be logged by proxies/servers. Prefer POST + Authorization when possible.
+
+### 3) Resume waiting after timeout (with request_id)
+
+After a client timeout (like `--max-time 40`), you can resume waiting with `request_id`:
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
@@ -106,32 +137,33 @@ curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'request_id=req_xxx'
 ```
 
-### 4) 预先生成 request_id（推荐在“非交互环境”使用）
+### 4) Pre-generate request_id (recommended for non-interactive environments)
 
-你可以自行生成一个 `request_id`（例如在任务队列里预先分配），然后让 server 复用这个 ID 创建请求。这样做有两个好处：
+You can generate a `request_id` yourself (e.g. pre-allocate it in a job queue) and let the server create a request with that ID. Benefits:
 
-- 即使 nonStream 长连接中途断开，你也能用同一个 `request_id` 重新请求并取回终态结果
-- 你可以把 `request_id` 当作外部系统里的幂等键/关联键使用
+- Even if the nonStream long connection drops, you can re-request with the same `request_id` and fetch the terminal result
+- You can use `request_id` as an idempotency/correlation key in external systems
 
-规则：
+Rules:
 
-- `request_id` 必须以 `req_` 开头，且只包含小写字母、数字与下划线
+- `request_id` must start with `req_` and only contain lowercase letters, digits, and underscores
 
-示例（GET + 预生成 request_id）：
+Example (GET + pre-generated request_id):
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'key=change-me' \
   --data-urlencode 'request_id=req_myjob_20260131_0001' \
   --data-urlencode 'title=Ask4Me Demo' \
-  --data-urlencode 'body=请回复确认。'
+  --data-urlencode 'body=Please confirm.' \
+  --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::'
 ```
 
-## 参数一个一个加（nonStream）
+## Add parameters step by step (nonStream)
 
-下面用 GET 方式演示“逐步加参数”，并用 `--data-urlencode` 避免手写 URL encode。
+The examples below use GET to show incremental parameters and use `--data-urlencode` to avoid manual URL encoding. Note that `mcd` is what makes the request actionable; without `mcd`, the user has nothing to click/type and you won’t get meaningful data back.
 
-### 1) 加 title
+### 1) Add title
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
@@ -139,45 +171,45 @@ curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'title=Ask4Me Demo'
 ```
 
-### 2) 加 body
+### 2) Add body
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'key=change-me' \
   --data-urlencode 'title=Ask4Me Demo' \
-  --data-urlencode 'body=这是一条测试消息，请点一个按钮或输入一段话。'
+  --data-urlencode 'body=This is a test message. Click a button or type a reply.'
 ```
 
-### 3) 加 expires_in_seconds
+### 3) Add expires_in_seconds
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'key=change-me' \
   --data-urlencode 'title=Ask4Me Demo' \
-  --data-urlencode 'body=请在 10 分钟内回复。' \
+  --data-urlencode 'body=Please respond within 10 minutes.' \
   --data-urlencode 'expires_in_seconds=600'
 ```
 
-### 4) 加 mcd（重点）
+### 4) Add mcd (important)
 
 ```bash
 curl -sS --max-time 40 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode 'key=change-me' \
   --data-urlencode 'title=Ask4Me Demo' \
-  --data-urlencode 'body=请选择一个动作，或输入一段话。' \
+  --data-urlencode 'body=Choose an action, or type some text.' \
   --data-urlencode 'expires_in_seconds=600' \
-  --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::\n\n:::input name="note" label="补充说明" submit="提交"\n:::'
+  --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::\n\n:::input name="note" label="Note" submit="Submit"\n:::'
 ```
 
-## MCD 语法（详细）
+## MCD syntax (details)
 
-MCD 是“交互控件描述”。server 会把 `mcd` 存到数据库，并在交互页 `/r/<request_id>/?k=<token>` 里解析它，渲染按钮和输入框。
+MCD is an “interaction control description”. The server stores `mcd` in the database, and the interaction page at `/r/<request_id>/?k=<token>` parses it to render buttons and inputs.
 
-当前实现是“按行解析”，只识别两类结构，其它内容会被忽略（不会渲染成 Markdown）。
+The current implementation is line-based parsing. It only recognizes two structures; other content is ignored (it is not rendered as Markdown).
 
-### 1) Buttons 块
+### 1) Buttons block
 
-语法：
+Syntax:
 
 ```text
 :::buttons
@@ -186,13 +218,13 @@ MCD 是“交互控件描述”。server 会把 `mcd` 存到数据库，并在�
 :::
 ```
 
-规则：
+Rules:
 
-- `label`：按钮显示文本
-- `value`：按钮提交值，最终会出现在终态结果的 `data.action`
-- 结束行必须是单独一行 `:::`
+- `label`: button text
+- `value`: submitted value, appears in the terminal result as `data.action`
+- The ending line must be a single line `:::`
 
-示例：
+Example:
 
 ```text
 :::buttons
@@ -201,47 +233,47 @@ MCD 是“交互控件描述”。server 会把 `mcd` 存到数据库，并在�
 :::
 ```
 
-当用户点击 `OK`，终态事件 `user.submitted` 的 `data` 类似：
+When the user clicks `OK`, the terminal event `user.submitted` contains `data` like:
 
 ```json
 { "action": "ok", "text": "" }
 ```
 
-### 2) Input 行
+### 2) Input line
 
-语法：
+Syntax:
 
 ```text
 :::input name="<name>" label="<label>" submit="<submit>"
 :::
 ```
 
-规则：
+Rules:
 
-- `label`：输入框上方的提示文本
-- `submit`：提交按钮文本
-- `name`：当前版本会被解析并保存，但提交时服务端仍固定使用 `data.text` 作为结果字段（`name` 预留给后续扩展，不会改变返回 JSON 的字段名）
+- `label`: hint text above the input
+- `submit`: submit button text
+- `name`: parsed and stored in current version, but submission still uses `data.text` as the result field (`name` is reserved for future extensions and does not change returned JSON field names)
 
-示例：
+Example:
 
 ```text
-:::input name="note" label="补充说明" submit="提交"
+:::input name="note" label="Note" submit="Submit"
 :::
 ```
 
-当用户提交输入，终态事件 `user.submitted` 的 `data` 类似：
+When the user submits input, the terminal event `user.submitted` contains `data` like:
 
 ```json
-{ "action": "", "text": "用户输入的内容" }
+{ "action": "", "text": "user input text" }
 ```
 
-### 3) 同时使用 buttons + input
+### 3) Use buttons + input together
 
-你可以同时提供按钮与输入框：用户点按钮或输入文本都能完成一次提交；提交后页面会显示 “Submitted.”。
+You can provide both buttons and input: clicking a button or typing text completes a submission. After submission the page shows “Submitted.”.
 
-## SSE 备用模式（stream=true）
+## SSE mode (stream=true)
 
-当你需要实时拿到 `request.created`（包含 interaction_url）以及后续事件流时，使用 SSE：
+If you need to receive `request.created` (includes `interaction_url`) and subsequent events in real-time, use SSE:
 
 ```bash
 curl -N -sS \
@@ -251,23 +283,23 @@ curl -N -sS \
   -d '{"title":"Ask4Me","body":"Please respond.","mcd":":::buttons\n- [OK](ok)\n:::"}'
 ```
 
-SSE 输出格式：
+SSE output format:
 
-- 每个事件一行 `data: <Event JSON>\n\n`
-- 结束标记：`data: [DONE]\n\n`
-- 响应头会带 `X-Ask4Me-Request-Id`
+- One event per line: `data: <Event JSON>\n\n`
+- End marker: `data: [DONE]\n\n`
+- Response header includes `X-Ask4Me-Request-Id`
 
-## JavaScript SDK（ask4me-sdk）
+## JavaScript SDK (ask4me-sdk)
 
-SDK 目前默认使用 SSE 模式（会自动加 `stream=true`），适合在程序里实时消费事件。
+The SDK currently uses SSE mode by default (automatically adds `stream=true`), suitable for consuming events in real time in your program.
 
-安装：
+Install:
 
 ```bash
 npm i ask4me-sdk
 ```
 
-使用示例：
+Example:
 
 ```js
 import { ask } from "ask4me-sdk";
@@ -280,13 +312,13 @@ const { requestId, result } = await ask({
   apiKey,
   payload: {
     title: "Ask4Me Demo",
-    body: "请随便点一个按钮或回一段话。",
+    body: "Click a button or type a reply.",
     mcd:
       ":::buttons\n" +
       "- [OK](ok)\n" +
       "- [Later](later)\n" +
       ":::\n\n" +
-      ":::input name=\"note\" label=\"补充说明\" submit=\"提交\"\n" +
+      ":::input name=\"note\" label=\"Note\" submit=\"Submit\"\n" +
       ":::",
     expires_in_seconds: 600
   },
@@ -299,64 +331,64 @@ console.log("request_id:", requestId);
 console.log("final:", result);
 ```
 
-## CLI（ask4me-cli）
+## CLI (ask4me-cli)
 
-安装：
+Install:
 
 ```bash
 npm i -g ask4me-cli
 ```
 
-调用示例：
+Example:
 
 ```bash
 ask4me-cli -h http://localhost:8080 -k change-me --title 'Ask4Me' --body 'Please respond.'
 ```
 
-## 从源码编译（可选）
+## Build from source (optional)
 
-本仓库提供了 GoReleaser 配置（[.goreleaser.yaml](file:///Users/easy/Playground/ask4me/.goreleaser.yaml)）。如果你只想手动交叉编译，也可以用：
+This repository includes a GoReleaser config ([.goreleaser.yaml](./.goreleaser.yaml)). If you only want to cross-compile manually:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ask4me-linux-amd64 .
 ```
 
-## Node Server 启动器（ask4me-server）
+## Node server launcher (ask4me-server)
 
-用于自动下载/启动 Go server 二进制，并协助生成配置文件。
+Downloads/starts the Go server binary automatically and helps generate config files.
 
-安装：
+Install:
 
 ```bash
 npm i -g ask4me-server
 ```
 
-启动（默认写入配置到 `~/.ask4me/.env`）：
+Start (writes config to `~/.ask4me/.env` by default):
 
 ```bash
 ask4me-server
 ```
 
-指定配置路径：
+Specify config path:
 
 ```bash
 ask4me-server --config ./.env
 ```
 
-后台运行：
+Run in background:
 
 ```bash
 ask4me-server -d
 ```
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue / PR。开发与贡献约定请见 [CONTRIBUTING.md](file:///Users/easy/Playground/ask4me/CONTRIBUTING.md)。
+Issues and PRs are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for conventions.
 
-## 安全
+## Security
 
-如发现安全问题，请按 [SECURITY.md](file:///Users/easy/Playground/ask4me/SECURITY.md) 的方式私下报告。
+If you discover a security issue, please report it privately following [SECURITY.md](./SECURITY.md).
 
 ## License
 
-[MIT](file:///Users/easy/Playground/ask4me/LICENSE)
+[MIT](./LICENSE)
