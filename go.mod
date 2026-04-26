@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/easychen/serverchan-sdk-golang v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.49.1
+	modernc.org/sqlite v1.50.0
 )
 
 require (
