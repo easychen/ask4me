@@ -1,4 +1,5 @@
 .env
+ask4me
 ask4me.db
 ask4me.db*
 node_modules

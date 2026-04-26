@@ -1,0 +1,27 @@
+services:
+  ask4me:
+    image: easychen/ask4me:latest
+    pull_policy: always
+    container_name: ask4me
+    restart: unless-stopped
+    ports:
+      - "${ASK4ME_PORT:-8080}:8080"
+    volumes:
+      - ask4me-data:/data
+    environment:
+      # Required
+      ASK4ME_BASE_URL: ${ASK4ME_BASE_URL}
+      ASK4ME_API_KEY: ${ASK4ME_API_KEY}
+
+      # Notification channel — set at least one
+      ASK4ME_SERVERCHAN_SENDKEY: ${ASK4ME_SERVERCHAN_SENDKEY:-}
+      ASK4ME_APPRISE_URLS: ${ASK4ME_APPRISE_URLS:-}
+
+      # Optional tuning
+      ASK4ME_DEFAULT_EXPIRES_IN_SECONDS: ${ASK4ME_DEFAULT_EXPIRES_IN_SECONDS:-3600}
+      ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS: ${ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS:-15}
+      ASK4ME_TERMINAL_CACHE_SECONDS: ${ASK4ME_TERMINAL_CACHE_SECONDS:-60}
+      ASK4ME_SQLITE_PATH: /data/ask4me.db
+
+volumes:
+  ask4me-data:
