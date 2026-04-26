@@ -13,6 +13,7 @@ permissions:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    environment: ask4me
     steps:
       - name: Checkout
         uses: actions/checkout@v4
