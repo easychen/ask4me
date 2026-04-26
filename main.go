@@ -587,6 +587,11 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
 
   {{if .Done}}
     <div class="ok">Submitted.</div>
+    {{if .JsonForms}}
+    <div class="row">
+      <button type="button" onclick="window.close()">关闭窗口</button>
+    </div>
+    {{end}}
   {{else}}
     {{if .JsonForms}}
       <div class="row">
