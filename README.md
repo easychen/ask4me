@@ -79,6 +79,44 @@ Or run the downloaded/built `ask4me` directly:
 
 By default it listens on `:8080` (override with `ASK4ME_LISTEN_ADDR`).
 
+### 3) Docker (amd64 / arm64)
+
+Images are published to Docker Hub and GHCR on every release:
+
+```bash
+# Docker Hub
+docker pull easychen/ask4me:latest
+
+# GitHub Container Registry
+docker pull ghcr.io/easychen/ask4me:latest
+```
+
+Run with an env file:
+
+```bash
+docker run -d \
+  --name ask4me \
+  -p 8080:8080 \
+  -v $(pwd)/ask4me.db:/data/ask4me.db \
+  --env-file .env \
+  easychen/ask4me:latest
+```
+
+Or pass variables directly:
+
+```bash
+docker run -d \
+  --name ask4me \
+  -p 8080:8080 \
+  -v $(pwd)/ask4me.db:/data/ask4me.db \
+  -e ASK4ME_BASE_URL=https://your-domain.com \
+  -e ASK4ME_API_KEY=your-key \
+  -e ASK4ME_SERVERCHAN_SENDKEY=your-sendkey \
+  easychen/ask4me:latest
+```
+
+The SQLite database is stored at `/data/ask4me.db` inside the container — mount a host volume to persist it across restarts.
+
 ## Quickstart: nonStream mode + raw requests (curl)
 
 nonStream is the default: without `stream=true`, `/v1/ask` blocks until the user submits in the web UI or the request expires, then returns a single JSON response.

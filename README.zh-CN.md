@@ -82,6 +82,44 @@ ask4me-server --config ./.env
 
 启动后默认监听 `:8080`（可用 `ASK4ME_LISTEN_ADDR` 修改）。
 
+### 3) Docker（amd64 / arm64）
+
+每次发布 Release 时会自动构建并推送到 Docker Hub 和 GHCR：
+
+```bash
+# Docker Hub
+docker pull easychen/ask4me:latest
+
+# GitHub Container Registry
+docker pull ghcr.io/easychen/ask4me:latest
+```
+
+使用 env 文件启动：
+
+```bash
+docker run -d \
+  --name ask4me \
+  -p 8080:8080 \
+  -v $(pwd)/ask4me.db:/data/ask4me.db \
+  --env-file .env \
+  easychen/ask4me:latest
+```
+
+或直接传入环境变量：
+
+```bash
+docker run -d \
+  --name ask4me \
+  -p 8080:8080 \
+  -v $(pwd)/ask4me.db:/data/ask4me.db \
+  -e ASK4ME_BASE_URL=https://your-domain.com \
+  -e ASK4ME_API_KEY=your-key \
+  -e ASK4ME_SERVERCHAN_SENDKEY=your-sendkey \
+  easychen/ask4me:latest
+```
+
+SQLite 数据库存放在容器内的 `/data/ask4me.db`，挂载宿主机目录可在重启后保留数据。
+
 ## 最简单用法：nonStream 模式 + 裸请求（curl）
 
 nonStream 是默认模式：不带 `stream=true` 时，`/v1/ask` 会一直阻塞，直到用户在网页端提交或请求过期，然后一次性返回 JSON。

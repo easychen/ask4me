@@ -1,0 +1,7 @@
+**/node_modules
+ui/dist
+ask4me
+*.db
+.env
+.env.*
+!.env.example
