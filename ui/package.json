@@ -6,14 +6,14 @@
     "build": "esbuild src/jsonforms.ts --bundle --minify --format=iife --global-name=Ask4MeJsonForms --target=es2020 --outfile=dist/jsonforms.bundle.js"
   },
   "dependencies": {
-    "@jsonforms/core": "3.5.1",
-    "@jsonforms/react": "3.5.1",
-    "@jsonforms/vanilla-renderers": "3.5.1",
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "@jsonforms/core": "^3.5.1",
+    "@jsonforms/react": "^3.5.1",
+    "@jsonforms/vanilla-renderers": "^3.5.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
-    "esbuild": "0.25.0"
+    "esbuild": "^0.25.0"
   }
 }
 
