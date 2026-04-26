@@ -11,7 +11,7 @@ const translations = {
       docs: "Docs"
     },
     hero: {
-      version: "v0.1.8 Release",
+      version: "v0.2.1 Release",
       titleStart: "The Simplest",
       titleHighlight: "Human-in-the-Loop",
       titleEnd: "Service",
@@ -46,21 +46,34 @@ const translations = {
         { title: "Progressive Streams", desc: "Need real-time updates? Switch to SSE (Server-Sent Events) mode to receive the interaction URL and status updates instantly." },
         { title: "Resume & Reconnect", desc: "Network flaky? Pre-generate a Request ID. If your connection drops, reconnect with the same ID to retrieve the result seamlessly." },
         { title: "Fully Open Source", desc: "Licensed under MIT. Audit the code, host it on your own server, modify it to fit your needs. No vendor lock-in." },
-        { title: "Zero Friction Setup", desc: "Install via NPM in seconds. We provide a CLI wrapper that downloads the correct binary for your OS automatically." }
+        { title: "Zero Friction Setup", desc: "Install via NPM or Docker in seconds. We provide a CLI wrapper that downloads the correct binary for your OS automatically." }
       ]
     },
     install: {
       titleStart: "Up and running in",
       titleHighlight: "seconds",
-      desc: "We provide a Node.js wrapper that handles the heavy lifting. It automatically fetches the correct Go binary for your platform (Linux, macOS, Windows) and helps you generate the configuration.",
-      steps: [
-        { title: "Install the Server", desc: "Global installation via NPM is recommended for easy access." },
-        { title: "Configure & Run", desc: "Use the interactive setup tool to define your notification channels (ServerChan or Apprise)." },
-        { title: "Send Request", desc: "Use curl, Python, or our JS SDK to trigger your first Human-in-the-Loop event." }
-      ],
-      cmdInstall: "Install via NPM",
-      cmdRun: "Start the server (Interactive)",
-      cmdTest: "Test with cURL"
+      npm: {
+        desc: "We provide a Node.js wrapper that handles the heavy lifting. It automatically fetches the correct Go binary for your platform (Linux, macOS, Windows) and helps you generate the configuration.",
+        steps: [
+          { title: "Install the Server", desc: "Global installation via NPM is recommended for easy access." },
+          { title: "Configure & Run", desc: "Use the interactive setup tool to define your notification channels (ServerChan or Apprise)." },
+          { title: "Send Request", desc: "Use curl, Python, or our JS SDK to trigger your first Human-in-the-Loop event." }
+        ],
+        cmdInstall: "Install via NPM",
+        cmdRun: "Start the server (Interactive)",
+        cmdTest: "Test with cURL"
+      },
+      docker: {
+        desc: "Official multi-arch images (amd64 / arm64) are published to Docker Hub and GHCR on every release. Mount a volume to persist the SQLite database across restarts.",
+        steps: [
+          { title: "Pull the Image", desc: "Available on Docker Hub and GitHub Container Registry. Both are updated on every release." },
+          { title: "Run with env vars", desc: "Pass your configuration directly as environment variables — no config file needed." },
+          { title: "Send Request", desc: "Server is ready on port 8080. Use curl, Python, or our JS SDK to test." }
+        ],
+        cmdPull: "Pull the image",
+        cmdRun: "Run the container",
+        cmdTest: "Test with cURL"
+      }
     },
     footer: {
       madeWith: "Made with",
@@ -76,7 +89,7 @@ const translations = {
       docs: "文档"
     },
     hero: {
-      version: "v0.1.8 发布",
+      version: "v0.2.1 发布",
       titleStart: "极简的",
       titleHighlight: "Human-in-the-Loop",
       titleEnd: "服务",
@@ -111,21 +124,34 @@ const translations = {
         { title: "渐进式流", desc: "需要实时更新？切换到 SSE (Server-Sent Events) 模式，即时接收交互链接和状态更新。" },
         { title: "断点重连", desc: "网络不稳定？预生成 Request ID。如果连接断开，使用相同 ID 重连即可无缝获取结果。" },
         { title: "完全开源", desc: "MIT 协议。代码可审计，支持私有化部署，按需修改。无厂商锁定。" },
-        { title: "零门槛安装", desc: "NPM 秒级安装。我们提供 CLI 包装器，自动下载适合你系统的二进制文件。" }
+        { title: "零门槛安装", desc: "NPM 或 Docker 秒级部署。CLI 包装器自动下载适合你系统的二进制文件。" }
       ]
     },
     install: {
       titleStart: "数秒内",
       titleHighlight: "启动运行",
-      desc: "我们提供 Node.js 包装器处理繁重工作。它自动获取适合你平台 (Linux, macOS, Windows) 的 Go 二进制文件，并协助生成配置。",
-      steps: [
-        { title: "安装服务端", desc: "推荐使用 NPM 全局安装以便快速访问。" },
-        { title: "配置与运行", desc: "使用交互式设置工具定义通知渠道 (ServerChan 或 Apprise)。" },
-        { title: "发送请求", desc: "使用 curl, Python 或 JS SDK 触发你的第一个人机交互事件。" }
-      ],
-      cmdInstall: "通过 NPM 安装",
-      cmdRun: "启动服务器 (交互式)",
-      cmdTest: "使用 cURL 测试"
+      npm: {
+        desc: "我们提供 Node.js 包装器处理繁重工作。它自动获取适合你平台 (Linux, macOS, Windows) 的 Go 二进制文件，并协助生成配置。",
+        steps: [
+          { title: "安装服务端", desc: "推荐使用 NPM 全局安装以便快速访问。" },
+          { title: "配置与运行", desc: "使用交互式设置工具定义通知渠道 (ServerChan 或 Apprise)。" },
+          { title: "发送请求", desc: "使用 curl, Python 或 JS SDK 触发你的第一个人机交互事件。" }
+        ],
+        cmdInstall: "通过 NPM 安装",
+        cmdRun: "启动服务器（交互式）",
+        cmdTest: "使用 cURL 测试"
+      },
+      docker: {
+        desc: "官方多架构镜像（amd64 / arm64）在每次发布时同步推送到 Docker Hub 和 GHCR。挂载数据卷可在重启后保留 SQLite 数据。",
+        steps: [
+          { title: "拉取镜像", desc: "Docker Hub 和 GitHub Container Registry 均可使用，每次发布同步更新。" },
+          { title: "通过环境变量运行", desc: "直接以环境变量传入配置，无需准备配置文件。" },
+          { title: "发送请求", desc: "服务就绪于 8080 端口，使用 curl、Python 或 JS SDK 即可测试。" }
+        ],
+        cmdPull: "拉取镜像",
+        cmdRun: "启动容器",
+        cmdTest: "使用 cURL 测试"
+      }
     },
     footer: {
       madeWith: "制作：",
