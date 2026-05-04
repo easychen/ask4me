@@ -2,6 +2,25 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { JsonForms } from "@jsonforms/react";
 import { vanillaCells, vanillaRenderers } from "@jsonforms/vanilla-renderers";
+import {
+  CollapsibleGroupRenderer,
+  collapsibleGroupTester,
+} from "./renderers/CollapsibleGroupRenderer";
+import {
+  LongLabelRenderer,
+  longLabelTester,
+} from "./renderers/LongLabelRenderer";
+import {
+  LongTextDisplayRenderer,
+  longTextDisplayTester,
+} from "./renderers/LongTextDisplayRenderer";
+
+const renderers = [
+  ...vanillaRenderers,
+  { tester: collapsibleGroupTester, renderer: CollapsibleGroupRenderer },
+  { tester: longLabelTester, renderer: LongLabelRenderer },
+  { tester: longTextDisplayTester, renderer: LongTextDisplayRenderer },
+];
 
 type MountOptions = {
   specUrl: string;
@@ -99,7 +118,7 @@ export function mount(opts: MountOptions) {
       schema,
       uischema,
       data,
-      renderers: vanillaRenderers,
+      renderers,
       cells: vanillaCells,
       onChange: ({ data, errors }: any) => {
         if (data !== undefined) setData(data);
