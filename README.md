@@ -210,6 +210,106 @@ Possible terminal `last_event_type` values:
 - `request.expired`: expired without submission
 - `notify.failed`: notification delivery failed (usually missing config or channel error)
 
+### 1c) JSON Forms UI extensions (collapsible / long text)
+
+In addition to the built-in JSON Forms UI elements (`Control` / `Group` / `VerticalLayout` / `Label` / etc.), Ask4Me ships three custom renderers triggered purely via the `options` field — no extra `type` is introduced, so the UI schema remains valid JSON Forms. If none of the relevant options are set, behavior falls back to the default vanilla renderer.
+
+**1. Collapsible Group** — wrap a section of fields and collapse it by default. Useful for "advanced settings" or any long form area.
+
+```json
+{
+  "type": "Group",
+  "label": "Advanced settings",
+  "options": { "collapsible": true, "defaultOpen": false, "maxHeight": 320 },
+  "elements": [
+    { "type": "Control", "scope": "#/properties/foo" },
+    { "type": "Control", "scope": "#/properties/bar" }
+  ]
+}
+```
+
+- `collapsible: true` → renders as native `<details><summary>` with `label` as the header
+- `defaultOpen` (default `false`) → initial expanded state
+- `maxHeight` (number or CSS string) → caps the inner content area; overflow scrolls
+
+**2. Long static label** — show a long block of static instructions/disclaimer text without binding to data. Add `maxHeight` for scrolling, `collapsible` to default-collapse.
+
+```json
+// scrollable only
+{
+  "type": "Label",
+  "text": "<long instructions here>",
+  "options": { "maxHeight": 240 }
+}
+
+// collapsed by default; click to expand
+{
+  "type": "Label",
+  "text": "<long instructions here>",
+  "options": {
+    "collapsible": true,
+    "defaultOpen": false,
+    "summary": "Read the full notice",
+    "maxHeight": 280
+  }
+}
+```
+
+- `summary` (optional) → text shown on the always-visible header. Falls back to `"Details"` when omitted.
+
+**3. Read-only long text bound to data** — render a string field as a non-editable scrollable block (e.g. echo back a long generated description). Opt-in with `readonlyBlock: true`.
+
+```json
+{
+  "type": "Control",
+  "scope": "#/properties/description",
+  "label": "System notice",
+  "options": {
+    "readonlyBlock": true,
+    "collapsible": true,
+    "defaultOpen": false,
+    "maxHeight": 200
+  }
+}
+```
+
+- Without `readonlyBlock: true` the control falls through to the default editor.
+- When `collapsible: true`, the control's `label` is used as the summary unless `options.summary` is provided.
+
+**Combined example** — a JSON Forms request that puts a long notice up top (collapsed) and a normal form below:
+
+```bash
+curl -sS --max-time 120 \
+  -X POST 'http://localhost:8080/v1/ask' \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Confirm deployment",
+    "jsonforms": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "approve": { "type": "boolean" },
+          "comment": { "type": "string" }
+        }
+      },
+      "uischema": {
+        "type": "VerticalLayout",
+        "elements": [
+          {
+            "type": "Label",
+            "text": "This action will roll out v1.4.0 to production.\n\nChangelog: ...(very long)...",
+            "options": { "collapsible": true, "summary": "View changelog", "maxHeight": 240 }
+          },
+          { "type": "Control", "scope": "#/properties/approve", "label": "I approve" },
+          { "type": "Control", "scope": "#/properties/comment", "label": "Comment" }
+        ]
+      },
+      "submit_label": "Confirm"
+    }
+  }'
+```
+
 ### 2) GET (environments without headers)
 
 If you can’t easily set the `Authorization: Bearer ...` header, use GET with a `key` query param:

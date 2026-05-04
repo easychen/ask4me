@@ -213,6 +213,106 @@ curl -sS --max-time 120 \
 - `request.expired`：到期未提交
 - `notify.failed`：通知发送失败（通常是没配置通知渠道或渠道异常）
 
+### 1c) JSON Forms 扩展用法（折叠 / 长文本）
+
+除了 JSON Forms 内置的 `Control` / `Group` / `VerticalLayout` / `Label` 等元素，Ask4Me 额外内置了三个自定义渲染器，**全部通过 `options` 字段触发**，不引入非标准的 `type`，所以 UI schema 仍然是合法的 JSON Forms。未命中触发条件时，行为会回落到 vanilla 默认渲染器。
+
+**1. 可折叠分组（Collapsible Group）** —— 把若干表单项打包到一个折叠区，默认收起。适合"高级设置"或想让长表单更紧凑的场景。
+
+```json
+{
+  "type": "Group",
+  "label": "高级设置",
+  "options": { "collapsible": true, "defaultOpen": false, "maxHeight": 320 },
+  "elements": [
+    { "type": "Control", "scope": "#/properties/foo" },
+    { "type": "Control", "scope": "#/properties/bar" }
+  ]
+}
+```
+
+- `collapsible: true` → 用原生 `<details><summary>` 渲染，`label` 作为标题
+- `defaultOpen`（默认 `false`） → 初始是否展开
+- `maxHeight`（数字或 CSS 字符串） → 内容区最大高度，超出自动滚动
+
+**2. 静态长文本说明（Long Label）** —— 不绑定数据字段，仅展示一段长说明 / 须知 / 协议。可以加 `maxHeight` 滚动，也可以用 `collapsible` 默认收起。
+
+```json
+// 仅滚动
+{
+  "type": "Label",
+  "text": "<这里是一段很长的说明>",
+  "options": { "maxHeight": 240 }
+}
+
+// 默认收起，点击展开
+{
+  "type": "Label",
+  "text": "<这里是一段很长的说明>",
+  "options": {
+    "collapsible": true,
+    "defaultOpen": false,
+    "summary": "查看完整说明",
+    "maxHeight": 280
+  }
+}
+```
+
+- `summary`（可选） → 折叠时始终可见的标题文字。不填则回落为 `"详情"`。
+
+**3. 绑定数据的只读长文本（Read-only Block）** —— 把一个字符串字段渲染为不可编辑的滚动块（例如服务端生成的长描述需要回显给用户审阅）。通过 `readonlyBlock: true` 显式开启。
+
+```json
+{
+  "type": "Control",
+  "scope": "#/properties/description",
+  "label": "系统说明",
+  "options": {
+    "readonlyBlock": true,
+    "collapsible": true,
+    "defaultOpen": false,
+    "maxHeight": 200
+  }
+}
+```
+
+- 不传 `readonlyBlock: true` 时不会触发，照旧走默认 Control 渲染器。
+- 折叠模式下，summary 标题默认用控件的 `label`；可用 `options.summary` 覆盖。
+
+**组合示例** —— 顶部放一段折叠的长须知，下面是普通的提交表单：
+
+```bash
+curl -sS --max-time 120 \
+  -X POST 'http://localhost:8080/v1/ask' \
+  -H 'Authorization: Bearer change-me' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "确认发布",
+    "jsonforms": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "approve": { "type": "boolean" },
+          "comment": { "type": "string" }
+        }
+      },
+      "uischema": {
+        "type": "VerticalLayout",
+        "elements": [
+          {
+            "type": "Label",
+            "text": "本次操作将把 v1.4.0 发布到生产环境。\n\n变更日志: ...(很长)...",
+            "options": { "collapsible": true, "summary": "查看变更日志", "maxHeight": 240 }
+          },
+          { "type": "Control", "scope": "#/properties/approve", "label": "我已确认并同意发布" },
+          { "type": "Control", "scope": "#/properties/comment", "label": "备注" }
+        ]
+      },
+      "submit_label": "确认发布"
+    }
+  }'
+```
+
 ### 2) GET 裸请求（无 header 环境）
 
 如果你所在环境不方便设置 `Authorization: Bearer ...` 头，可以用 GET 并在 URL 上带 `key`：
