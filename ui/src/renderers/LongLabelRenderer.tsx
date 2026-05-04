@@ -9,6 +9,7 @@ import {
   uiTypeIs,
 } from "@jsonforms/core";
 import { withJsonFormsLayoutProps } from "@jsonforms/react";
+import { renderMarkdown } from "./markdown";
 
 const hasMaxHeight: Tester = (uischema: any) =>
   !!uischema &&
@@ -18,7 +19,14 @@ const hasMaxHeight: Tester = (uischema: any) =>
 
 export const longLabelTester = rankWith(
   5,
-  and(uiTypeIs("Label"), or(optionIs("collapsible", true), hasMaxHeight))
+  and(
+    uiTypeIs("Label"),
+    or(
+      optionIs("collapsible", true),
+      optionIs("markdown", true),
+      hasMaxHeight
+    )
+  )
 );
 
 type LongLabelOptions = {
@@ -26,6 +34,7 @@ type LongLabelOptions = {
   defaultOpen?: boolean;
   maxHeight?: number | string;
   summary?: string;
+  markdown?: boolean;
 };
 
 const Component = ({ uischema, visible }: any) => {
@@ -39,11 +48,30 @@ const Component = ({ uischema, visible }: any) => {
       ? opts.maxHeight
       : undefined;
 
+  const useMarkdown = opts.markdown === true;
   const blockStyle: React.CSSProperties = {
-    whiteSpace: "pre-wrap",
+    ...(useMarkdown ? {} : { whiteSpace: "pre-wrap" }),
     lineHeight: 1.6,
     color: "#374151",
     ...(maxHeight !== undefined ? { maxHeight, overflow: "auto" } : {}),
+  };
+
+  const renderBody = (extraStyle?: React.CSSProperties) => {
+    const style = { ...blockStyle, ...(extraStyle || {}) };
+    if (useMarkdown) {
+      return (
+        <div
+          className="jsonforms-long-label markdown-body"
+          style={style}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+        />
+      );
+    }
+    return (
+      <div className="jsonforms-long-label" style={style}>
+        {text}
+      </div>
+    );
   };
 
   if (opts.collapsible) {
@@ -69,16 +97,12 @@ const Component = ({ uischema, visible }: any) => {
         >
           {summaryText}
         </summary>
-        <div style={{ paddingTop: 8, ...blockStyle }}>{text}</div>
+        {renderBody({ paddingTop: 8 })}
       </details>
     );
   }
 
-  return (
-    <div className="jsonforms-long-label" style={blockStyle}>
-      {text}
-    </div>
-  );
+  return renderBody();
 };
 
 export const LongLabelRenderer = withJsonFormsLayoutProps(Component);

@@ -213,7 +213,7 @@ curl -sS --max-time 120 \
 - `request.expired`：到期未提交
 - `notify.failed`：通知发送失败（通常是没配置通知渠道或渠道异常）
 
-### 1c) JSON Forms 扩展用法（折叠 / 长文本）
+### 1c) JSON Forms 扩展用法（折叠 / 长文本 / Markdown）
 
 除了 JSON Forms 内置的 `Control` / `Group` / `VerticalLayout` / `Label` 等元素，Ask4Me 额外内置了三个自定义渲染器，**全部通过 `options` 字段触发**，不引入非标准的 `type`，所以 UI schema 仍然是合法的 JSON Forms。未命中触发条件时，行为会回落到 vanilla 默认渲染器。
 
@@ -259,6 +259,7 @@ curl -sS --max-time 120 \
 ```
 
 - `summary`（可选） → 折叠时始终可见的标题文字。不填则回落为 `"详情"`。
+- `markdown: true` → 把 `text` 当 Markdown 渲染（GFM：标题 / 列表 / 表格 / 代码块 / 链接 / 图片 / 引用）。结果经 DOMPurify 净化，`<script>`、事件属性、`javascript:` 协议都会被剥离。该选项单独存在也能触发本渲染器（无需 `collapsible` 或 `maxHeight`）。
 
 **3. 绑定数据的只读长文本（Read-only Block）** —— 把一个字符串字段渲染为不可编辑的滚动块（例如服务端生成的长描述需要回显给用户审阅）。通过 `readonlyBlock: true` 显式开启。
 
@@ -278,6 +279,17 @@ curl -sS --max-time 120 \
 
 - 不传 `readonlyBlock: true` 时不会触发，照旧走默认 Control 渲染器。
 - 折叠模式下，summary 标题默认用控件的 `label`；可用 `options.summary` 覆盖。
+- `markdown: true` → 把绑定字段的字符串当 Markdown 渲染（解析与净化同 Long Label）。
+
+**Markdown 示例** —— 把发布说明（含图片 / 列表 / 链接）作为 Markdown 展示：
+
+```json
+{
+  "type": "Label",
+  "text": "## 发布 v1.4.0\n\n- 新增 **可折叠** 表单分组\n- 修复 [issue 42](https://example.com/issues/42)\n\n![logo](https://example.com/logo.png)",
+  "options": { "markdown": true, "maxHeight": 280 }
+}
+```
 
 **组合示例** —— 顶部放一段折叠的长须知，下面是普通的提交表单：
 

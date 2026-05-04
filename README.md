@@ -210,7 +210,7 @@ Possible terminal `last_event_type` values:
 - `request.expired`: expired without submission
 - `notify.failed`: notification delivery failed (usually missing config or channel error)
 
-### 1c) JSON Forms UI extensions (collapsible / long text)
+### 1c) JSON Forms UI extensions (collapsible / long text / markdown)
 
 In addition to the built-in JSON Forms UI elements (`Control` / `Group` / `VerticalLayout` / `Label` / etc.), Ask4Me ships three custom renderers triggered purely via the `options` field — no extra `type` is introduced, so the UI schema remains valid JSON Forms. If none of the relevant options are set, behavior falls back to the default vanilla renderer.
 
@@ -256,6 +256,7 @@ In addition to the built-in JSON Forms UI elements (`Control` / `Group` / `Verti
 ```
 
 - `summary` (optional) → text shown on the always-visible header. Falls back to `"Details"` when omitted.
+- `markdown: true` → render `text` as Markdown (GFM: headings / lists / tables / code blocks / links / images / blockquote). Sanitized with DOMPurify so `<script>`, event handlers and `javascript:` URLs are stripped. When set, the tester triggers even without `collapsible` / `maxHeight`.
 
 **3. Read-only long text bound to data** — render a string field as a non-editable scrollable block (e.g. echo back a long generated description). Opt-in with `readonlyBlock: true`.
 
@@ -275,6 +276,17 @@ In addition to the built-in JSON Forms UI elements (`Control` / `Group` / `Verti
 
 - Without `readonlyBlock: true` the control falls through to the default editor.
 - When `collapsible: true`, the control's `label` is used as the summary unless `options.summary` is provided.
+- `markdown: true` → render the bound string as Markdown (same parsing + sanitization as the Long Label).
+
+**Markdown example** — render a release notice as Markdown with image, list and link:
+
+```json
+{
+  "type": "Label",
+  "text": "## Release v1.4.0\n\n- Add **collapsible** form sections\n- Fix [issue 42](https://example.com/issues/42)\n\n![logo](https://example.com/logo.png)",
+  "options": { "markdown": true, "maxHeight": 280 }
+}
+```
 
 **Combined example** — a JSON Forms request that puts a long notice up top (collapsed) and a normal form below:
 

@@ -1,6 +1,6 @@
 {
   "name": "ask4me-sdk",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "MIT",
   "type": "module",
   "main": "./index.js",

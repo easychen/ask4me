@@ -7,6 +7,7 @@ import {
   uiTypeIs,
 } from "@jsonforms/core";
 import { withJsonFormsControlProps } from "@jsonforms/react";
+import { renderMarkdown } from "./markdown";
 
 export const longTextDisplayTester = rankWith(
   6,
@@ -18,6 +19,7 @@ type LongTextDisplayOptions = {
   defaultOpen?: boolean;
   maxHeight?: number | string;
   summary?: string;
+  markdown?: boolean;
 };
 
 const Component = ({ uischema, data, label, visible }: ControlProps) => {
@@ -30,9 +32,10 @@ const Component = ({ uischema, data, label, visible }: ControlProps) => {
     typeof opts.maxHeight === "number" || typeof opts.maxHeight === "string"
       ? opts.maxHeight
       : undefined;
+  const useMarkdown = opts.markdown === true;
 
   const blockStyle: React.CSSProperties = {
-    whiteSpace: "pre-wrap",
+    ...(useMarkdown ? {} : { whiteSpace: "pre-wrap" }),
     lineHeight: 1.6,
     color: "#374151",
     border: "1px solid #e5e7eb",
@@ -42,7 +45,15 @@ const Component = ({ uischema, data, label, visible }: ControlProps) => {
     ...(maxHeight !== undefined ? { maxHeight, overflow: "auto" } : {}),
   };
 
-  const body = <div style={blockStyle}>{text}</div>;
+  const body = useMarkdown ? (
+    <div
+      className="markdown-body"
+      style={blockStyle}
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+    />
+  ) : (
+    <div style={blockStyle}>{text}</div>
+  );
 
   if (opts.collapsible) {
     const summaryText = opts.summary ?? label ?? "详情";
