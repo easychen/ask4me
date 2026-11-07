@@ -59,7 +59,7 @@ cp .env.example .env
 至少需要：
 
 - `ASK4ME_BASE_URL`：外部可访问的 base URL，用于拼接交互链接（会发到通知里）
-- `ASK4ME_API_KEY`：API 鉴权 key
+- `ASK4ME_API_KEY`：API 鉴权 key（单用户模式必填；开启 `multi_user.enabled` 后会被忽略，旧 key 要写进 `multi_user.auth.keys`；见下文“多用户 / 试用模式”）
 - 通知渠道二选一（否则请求会很快以 `notify.failed` 结束）：
   - `ASK4ME_SERVERCHAN_SENDKEY`
   - 或 `ASK4ME_APPRISE_URLS`
@@ -119,6 +119,91 @@ docker run -d \
 ```
 
 SQLite 数据库存放在容器内的 `/data/ask4me.db`，挂载宿主机目录可在重启后保留数据。
+
+## 多用户 / 试用模式（默认关闭）
+
+默认仍是单用户：一个全局 `api_key` + 一套全局通知渠道。把 `multi_user.enabled` 设为 `true` 后，服务变成一个**无账号的多租户模式**：每个 API key 就是一个租户，key 只用来做请求隔离和配额，不需要注册/登录。
+
+### 1) 配置
+
+```yaml
+multi_user:
+  enabled: true
+  auth:
+    mode: allowlist          # allowlist | open
+    # allowlist：管理员在配置里列 key
+    keys:
+      - key: "a4m_replace_me_123456"
+        name: "alice"
+        requests_per_day: 500
+        max_pending: 10
+    # open：用户自助生成，key 必须以 a4m_<invite>_<random> 开头
+    invite_codes: ["trial2026"]
+  defaults:
+    requests_per_day: 200
+    max_pending: 5
+    max_expires_in_seconds: 86400
+  limits:
+    per_ip_requests_per_hour: 60
+    per_ip_new_keys_per_day: 10
+    global_requests_per_day: 5000
+    trust_proxy: false       # 在反向代理后面且已正确覆盖 XFF 时才开
+  allowed_apprise_schemes: ["schan","tgram","discord","slack","ntfy","gotify"]
+```
+
+- `allowlist`：只有配置里列出的 key 能用；多用户模式下 `api_key` **不再自动生效**。
+- `open`：allowlist 的 key 仍可用；另外接受 `a4m_<invite>_<random>`，`invite` 必须在 `invite_codes` 里，`random` 至少 16 位。删掉某个 invite 就能整批停用。
+- `enabled: false` 时完全保持原来的单用户行为，`api_key` 仍必填。
+- 多用户下 `api_key` 会被忽略；要保留旧 key，把它显式加进 `multi_user.auth.keys`。多用户下没有 owner 的旧请求默认不可通过 API 读取，会自然过期。
+
+**升级兼容**：旧版单用户配置不需要改。不写 `multi_user` 或 `enabled: false` 时，`api_key`、全局通知渠道、`?key=`、无渠道时的 `notify.failed` 行为都与原来一致；只有显式开启 `multi_user` 才进入新规则。开启时如果还留着旧 `api_key`：`open` 模式会打印 warning，`allowlist` 模式会直接报配置错误（因为没有 `auth.keys`），按提示把它加到 `auth.keys` 即可。
+
+生成一个 `open` 模式的自助 key：
+
+```bash
+printf 'a4m_%s_%s\n' 'trial2026' "$(openssl rand -hex 16)"
+```
+
+### 2) 通知渠道随请求传
+
+多用户下所有 key **必须**带 `notify`；全局 `serverchan_sendkey` / `apprise_urls` 只在单用户模式生效，避免任何用户往运营者自己的手机推送。每次请求带 `notify`：
+
+```bash
+curl -sS --max-time 120 -X POST 'https://your-domain.com/v1/ask' \
+  -H 'Authorization: Bearer a4m_trial2026_xxxxxxxxxxxxxxxx' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Approve deploy",
+    "body": "Please confirm.",
+    "notify": { "serverchan_sendkey": "SCT..." },
+    "mcd": ":::buttons\n- [OK](ok)\n- [Later](later)\n:::"
+  }'
+```
+
+- `notify.serverchan_sendkey` 或 `notify.apprise_urls` 二选一；也可以同时传，优先 ServerChan。
+- 通知凭据只在本次请求的内存里使用，不写数据库、不进事件；多用户下 `notify.failed` / `notify.sent` 也会脱敏。
+- 多用户下 API key 只从 `Authorization` header 读，`?key=` 会被拒绝，避免 URL 日志泄漏。
+- 多用户下没有 `notify` 的请求会在创建前返回 `400`；单用户模式没有渠道仍然走 `notify.failed`。
+
+### 3) 配额
+
+- 每个 key：`requests_per_day`、`max_pending`
+- 每个 IP：`per_ip_requests_per_hour`、`per_ip_new_keys_per_day`
+- 全局：`global_requests_per_day`
+- `expires_in_seconds` 会被 clamp 到 `max_expires_in_seconds`
+- 超限返回 `429` + `Retry-After` + JSON `{"error":"quota_exceeded",...}`
+
+注意：`open` 模式下 per-key 配额可以被“换一个新 key”绕过，真正兜底的是每 IP / 全局限制。公网试用建议再加一层 Cloudflare 或网关限流。
+
+### 4) 请求隔离
+
+多用户下 `requests` 表会记录 `api_key_hash`，所有 `request_id` 续接、SSE replay 都会校验 owner；用别的 key 查同一个 `request_id` 会得到 `404`，不会读到别人的答案。迁移前没有 owner 的旧请求默认读不到，会自然过期。
+
+### 5) 环境变量
+
+`ASK4ME_MULTI_USER_ENABLED`、`ASK4ME_MULTI_USER_MODE`、`ASK4ME_MULTI_USER_KEYS`、`ASK4ME_MULTI_USER_INVITE_CODES`、`ASK4ME_MULTI_USER_REQUESTS_PER_DAY`、`ASK4ME_MULTI_USER_MAX_PENDING`、`ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS`、`ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR`、`ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY`、`ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY`、`ASK4ME_MULTI_USER_TRUST_PROXY`、`ASK4ME_ALLOWED_APPRISE_SCHEMES`。
+
+> E2EE（端到端加密）是下一阶段，当前版本尚未实现；配置里暂时没有 `e2ee` 段。
 
 ## 最简单用法：nonStream 模式 + 裸请求（curl）
 
@@ -337,7 +422,7 @@ curl -sS --max-time 120 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::'
 ```
 
-安全提示：URL 参数可能被代理/日志记录；能用 POST + Authorization 时优先用 POST。
+安全提示：URL 参数可能被代理/日志记录；能用 POST + Authorization 时优先用 POST。多用户模式下 `?key=` 会被拒绝，必须用 `Authorization` header。
 
 ### 3) 超时后续接等待（用 request_id）
 
@@ -505,6 +590,8 @@ SSE 输出格式：
 
 SDK 目前默认使用 SSE 模式（会自动加 `stream=true`），适合在程序里实时消费事件。
 
+多用户模式下，把 `notify` 放进 `payload` 即可，SDK 会原样透传（key 仍通过 `apiKey` 走 Authorization header）。
+
 安装：
 
 ```bash
@@ -555,6 +642,15 @@ npm i -g ask4me-cli
 
 ```bash
 ask4me-cli -h http://localhost:8080 -k change-me --title 'Ask4Me' --body 'Please respond.'
+```
+
+多用户模式下把通知渠道一起传：
+
+```bash
+ask4me-cli -h https://your-domain.com -k a4m_trial2026_xxxxxxxxxxxxxxxx \
+  --title '审批' --body '请确认发布' \
+  --notify-sendkey 'SCT...'
+# 也可以用可重复的 --apprise-url 'schan://...'
 ```
 
 ## 从源码编译（可选）

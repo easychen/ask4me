@@ -8,3 +8,26 @@ default_expires_in_seconds: 3600
 sse_heartbeat_interval_seconds: 15
 listen_addr: ":8080"
 terminal_cache_seconds: 60
+
+# Multi-user / trial mode (off by default).
+# When enabled, api_key above is ignored; add it to auth.keys if needed.
+# multi_user:
+#   enabled: true
+#   auth:
+#     mode: allowlist            # allowlist | open
+#     keys:
+#       - key: "a4m_replace_me_123456"
+#         name: "alice"
+#         requests_per_day: 500
+#         max_pending: 10
+#     invite_codes: ["trial2026"]
+#   defaults:
+#     requests_per_day: 200
+#     max_pending: 5
+#     max_expires_in_seconds: 86400
+#   limits:
+#     per_ip_requests_per_hour: 60
+#     per_ip_new_keys_per_day: 10
+#     global_requests_per_day: 5000
+#     trust_proxy: false
+#   allowed_apprise_schemes: ["schan","tgram","discord","slack","ntfy","gotify"]

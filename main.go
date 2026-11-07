@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/base32"
@@ -37,16 +38,17 @@ import (
 var uiDistEmbedFS embed.FS
 
 type Config struct {
-	BaseURL                     string   `yaml:"base_url"`
-	APIKey                      string   `yaml:"api_key"`
-	ServerChanSendKey           string   `yaml:"serverchan_sendkey"`
-	AppriseURLs                 []string `yaml:"apprise_urls"`
-	AppriseBin                  string   `yaml:"apprise_bin"`
-	SQLitePath                  string   `yaml:"sqlite_path"`
-	DefaultExpiresInSeconds     int      `yaml:"default_expires_in_seconds"`
-	SSEHeartbeatIntervalSeconds int      `yaml:"sse_heartbeat_interval_seconds"`
-	ListenAddr                  string   `yaml:"listen_addr"`
-	TerminalCacheSeconds        int      `yaml:"terminal_cache_seconds"`
+	BaseURL                     string          `yaml:"base_url"`
+	APIKey                      string          `yaml:"api_key"`
+	ServerChanSendKey           string          `yaml:"serverchan_sendkey"`
+	AppriseURLs                 []string        `yaml:"apprise_urls"`
+	AppriseBin                  string          `yaml:"apprise_bin"`
+	SQLitePath                  string          `yaml:"sqlite_path"`
+	DefaultExpiresInSeconds     int             `yaml:"default_expires_in_seconds"`
+	SSEHeartbeatIntervalSeconds int             `yaml:"sse_heartbeat_interval_seconds"`
+	ListenAddr                  string          `yaml:"listen_addr"`
+	TerminalCacheSeconds        int             `yaml:"terminal_cache_seconds"`
+	MultiUser                   MultiUserConfig `yaml:"multi_user"`
 }
 
 func (c *Config) normalize() error {
@@ -57,8 +59,15 @@ func (c *Config) normalize() error {
 	if err != nil {
 		return fmt.Errorf("invalid base_url: %w", err)
 	}
-	if strings.TrimSpace(c.APIKey) == "" {
+	if err := c.MultiUser.normalize(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.APIKey) == "" && !c.MultiUser.Enabled {
 		return errors.New("api_key is required")
+	}
+	if c.MultiUser.Enabled && c.MultiUser.Auth.Mode == multiUserModeAllowlist &&
+		len(c.MultiUser.Auth.Keys) == 0 {
+		return errors.New("multi_user.auth.keys is required when multi_user.auth.mode=allowlist (api_key is ignored in multi-user mode)")
 	}
 	if strings.TrimSpace(c.SQLitePath) == "" {
 		c.SQLitePath = "./ask4me.db"
@@ -241,6 +250,8 @@ func newStore(db *sql.DB) (*store, error) {
 		"jsonforms_data_json":     "TEXT",
 		"jsonforms_submit_label":  "TEXT",
 		"jsonforms_renderer":      "TEXT",
+		"api_key_hash":            "TEXT",
+		"client_ip":               "TEXT",
 	}); err != nil {
 		return nil, err
 	}
@@ -248,6 +259,16 @@ func newStore(db *sql.DB) (*store, error) {
 		"payload_json": "TEXT",
 	}); err != nil {
 		return nil, err
+	}
+	indexStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_requests_key_created ON requests(api_key_hash, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_requests_ip_created ON requests(client_ip, created_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_requests_created ON requests(created_at);`,
+	}
+	for _, st := range indexStmts {
+		if _, err := db.Exec(st); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -292,15 +313,18 @@ func (s *store) createRequest(
 	reqID, title, body, mcd, status string,
 	expiresAt time.Time,
 	jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer sql.NullString,
+	apiKeyHash, clientIP string,
 ) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO requests(
 			request_id,title,body,mcd,status,expires_at,created_at,updated_at,
-			jsonforms_schema_json,jsonforms_uischema_json,jsonforms_data_json,jsonforms_submit_label,jsonforms_renderer
-		) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?)`,
+			jsonforms_schema_json,jsonforms_uischema_json,jsonforms_data_json,jsonforms_submit_label,jsonforms_renderer,
+			api_key_hash,client_ip
+		) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?)`,
 		reqID, title, body, mcd, status, expiresAt.Unix(), now, now,
 		jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer,
+		nullIfEmpty(apiKeyHash), nullIfEmpty(clientIP),
 	)
 	return err
 }
@@ -463,8 +487,9 @@ type askRequest struct {
 		SubmitLabel string          `json:"submit_label"`
 		Renderer    string          `json:"renderer"`
 	} `json:"jsonforms"`
-	ExpiresInSeconds      int  `json:"expires_in_seconds"`
-	ServerChanActionLinks bool `json:"serverchan_action_links"`
+	Notify                *notifySpec `json:"notify"`
+	ExpiresInSeconds      int         `json:"expires_in_seconds"`
+	ServerChanActionLinks bool        `json:"serverchan_action_links"`
 }
 
 type buttonSpec struct {
@@ -663,28 +688,42 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
 </html>`))
 
 type server struct {
-	cfg Config
-	db  *store
-	hub *runtimeHub
+	cfg     Config
+	db      *store
+	hub     *runtimeHub
+	tenants *tenantRegistry
 }
 
 func (s *server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			if strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.cfg.APIKey {
-				next.ServeHTTP(w, r)
+		key, fromQuery := extractAPIKey(r)
+		if key == "" {
+			s.writeUnauthorized(w)
+			return
+		}
+
+		var t tenant
+		if !s.cfg.MultiUser.Enabled {
+			if subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.APIKey)) != 1 {
+				s.writeUnauthorized(w)
+				return
+			}
+			t = tenant{KeyHash: sha256Hex(key), Name: "single"}
+		} else {
+			if fromQuery {
+				http.Error(w, "use Authorization: Bearer <key>; query key is disabled in multi-user mode", http.StatusUnauthorized)
+				return
+			}
+			var ok bool
+			t, ok = s.resolveTenant(key)
+			if !ok {
+				s.writeUnauthorized(w)
 				return
 			}
 		}
-		if r.Method == http.MethodGet {
-			if strings.TrimSpace(r.URL.Query().Get("key")) == s.cfg.APIKey {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="ask4me"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+
+		ctx := context.WithValue(r.Context(), tenantContextKey{}, t)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -874,13 +913,16 @@ func normalizeAskRequest(ar *askRequest) (int, error) {
 	return expiresIn, nil
 }
 
-func (s *server) createAskWithRequestID(ctx context.Context, requestID string, ar askRequest, sendTo http.ResponseWriter) (askRequest, time.Time, string, string, error) {
+func (s *server) createAskWithRequestID(ctx context.Context, requestID string, ar askRequest, t tenant, ip string, sendTo http.ResponseWriter) (askRequest, time.Time, string, string, error) {
 	expiresIn, err := normalizeAskRequest(&ar)
 	if err != nil {
 		return askRequest{}, time.Time{}, "", "", err
 	}
 	if expiresIn <= 0 {
 		expiresIn = s.cfg.DefaultExpiresInSeconds
+	}
+	if s.cfg.MultiUser.Enabled && t.Quota.MaxExpiresInSeconds > 0 && expiresIn > t.Quota.MaxExpiresInSeconds {
+		expiresIn = t.Quota.MaxExpiresInSeconds
 	}
 	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
 
@@ -901,7 +943,13 @@ func (s *server) createAskWithRequestID(ctx context.Context, requestID string, a
 		}
 	}
 
-	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt, schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer); err != nil {
+	apiKeyHash := ""
+	clientIPValue := ""
+	if s.cfg.MultiUser.Enabled {
+		apiKeyHash = t.KeyHash
+		clientIPValue = ip
+	}
+	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt, schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer, apiKeyHash, clientIPValue); err != nil {
 		return askRequest{}, time.Time{}, "", "", err
 	}
 
@@ -928,8 +976,50 @@ func (s *server) createAskWithRequestID(ctx context.Context, requestID string, a
 	return ar, expiresAt, interactionURL, ev.ID, nil
 }
 
+func (s *server) preflightAsk(r *http.Request, t tenant, ip string) (askRequest, notifyChannel, error) {
+	ar, err := parseAskRequestFromHTTP(r)
+	if err != nil {
+		if err.Error() == "method not allowed" {
+			return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusMethodNotAllowed, Message: "method not allowed"}
+		}
+		return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusBadRequest, Message: "bad request"}
+	}
+	ch, err := s.resolveNotifyChannel(ar)
+	if err != nil {
+		return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusBadRequest, Message: err.Error()}
+	}
+	if err := s.checkCreateQuota(r.Context(), t, ip); err != nil {
+		return askRequest{}, notifyChannel{}, err
+	}
+	return ar, ch, nil
+}
+
+func writeAskPreflightError(w http.ResponseWriter, err error) {
+	var he *askHTTPError
+	if errors.As(err, &he) {
+		http.Error(w, he.Message, he.Status)
+		return
+	}
+	var qe *quotaError
+	if errors.As(err, &qe) {
+		writeAskError(w, err)
+		return
+	}
+	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
+func writeCreateAskError(w http.ResponseWriter, err error) {
+	if err != nil && strings.Contains(err.Error(), "jsonforms") {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Error(w, "failed to create request", http.StatusInternalServerError)
+}
+
 func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	t, _ := tenantFromContext(ctx)
+	ip := clientIP(r, s.cfg.MultiUser.Limits.TrustProxy)
 	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
 	if requestID != "" && !isValidRequestID(requestID) {
 		http.Error(w, "invalid request_id", http.StatusBadRequest)
@@ -937,26 +1027,18 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	if requestID == "" {
 		requestID = genID("req_")
-		ar, err := parseAskRequestFromHTTP(r)
+		ar, ch, err := s.preflightAsk(r, t, ip)
 		if err != nil {
-			if err.Error() == "method not allowed" {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			http.Error(w, "bad request", http.StatusBadRequest)
+			writeAskPreflightError(w, err)
 			return
 		}
-		ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, nil)
+		ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, t, ip, nil)
 		if err != nil {
-			if strings.Contains(err.Error(), "jsonforms") {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			http.Error(w, "failed to create request", http.StatusInternalServerError)
+			writeCreateAskError(w, err)
 			return
 		}
 
-		go s.sendNotification(context.Background(), requestID, ar2, interactionURL)
+		go s.sendNotification(context.Background(), requestID, ar2, interactionURL, ch)
 		go s.expireLoop(context.Background(), requestID, expiresAt)
 
 		tev, err := s.waitTerminalEvent(ctx, requestID)
@@ -971,32 +1053,26 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, _, err := s.db.getRequestStatus(ctx, requestID)
+	status, _, owner, err := s.db.getRequestStatusOwner(ctx, requestID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			if tev, ok := s.hub.getTerminal(requestID); ok {
-				s.writeAskWaitResponse(w, requestID, tev)
-				return
-			}
-			ar, err := parseAskRequestFromHTTP(r)
-			if err != nil {
-				if err.Error() == "method not allowed" {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			if !s.cfg.MultiUser.Enabled {
+				if tev, ok := s.hub.getTerminal(requestID); ok {
+					s.writeAskWaitResponse(w, requestID, tev)
 					return
 				}
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
 			}
-			ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, nil)
+			ar, ch, err := s.preflightAsk(r, t, ip)
 			if err != nil {
-				if strings.Contains(err.Error(), "jsonforms") {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				http.Error(w, "failed to create request", http.StatusInternalServerError)
+				writeAskPreflightError(w, err)
 				return
 			}
-			go s.sendNotification(context.Background(), requestID, ar2, interactionURL)
+			ar2, expiresAt, interactionURL, _, err := s.createAskWithRequestID(ctx, requestID, ar, t, ip, nil)
+			if err != nil {
+				writeCreateAskError(w, err)
+				return
+			}
+			go s.sendNotification(context.Background(), requestID, ar2, interactionURL, ch)
 			go s.expireLoop(context.Background(), requestID, expiresAt)
 
 			tev, err := s.waitTerminalEvent(ctx, requestID)
@@ -1011,6 +1087,10 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !s.canAccessRequest(t, owner) {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -1040,6 +1120,8 @@ func (s *server) handleAskJSON(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	t, _ := tenantFromContext(ctx)
+	ip := clientIP(r, s.cfg.MultiUser.Limits.TrustProxy)
 	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
 	lastEventID := strings.TrimSpace(r.URL.Query().Get("last_event_id"))
 	if requestID != "" && !isValidRequestID(requestID) {
@@ -1049,13 +1131,9 @@ func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 
 	if requestID == "" {
 		requestID = genID("req_")
-		ar, err := parseAskRequestFromHTTP(r)
+		ar, ch, err := s.preflightAsk(r, t, ip)
 		if err != nil {
-			if err.Error() == "method not allowed" {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			http.Error(w, "bad request", http.StatusBadRequest)
+			writeAskPreflightError(w, err)
 			return
 		}
 
@@ -1066,20 +1144,63 @@ func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 
-		ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, w)
+		ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, t, ip, w)
 		if err != nil {
-			if strings.Contains(err.Error(), "jsonforms") {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			http.Error(w, "failed to create request", http.StatusInternalServerError)
+			writeCreateAskError(w, err)
 			return
 		}
 
-		go s.sendNotification(context.Background(), requestID, ar2, interactionURL)
+		go s.sendNotification(context.Background(), requestID, ar2, interactionURL, ch)
 		go s.expireLoop(context.Background(), requestID, expiresAt)
 
 		s.streamUntilDone(ctx, w, requestID, firstEventID)
+		return
+	}
+
+	status, _, owner, err := s.db.getRequestStatusOwner(ctx, requestID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		if !s.cfg.MultiUser.Enabled {
+			if tev, ok := s.hub.getTerminal(requestID); ok {
+				sseInit(w)
+				w.Header().Set("X-Ask4Me-Request-Id", requestID)
+				_ = s.sendEvent(w, tev)
+				s.sendDone(w)
+				return
+			}
+		}
+
+		ar, ch, err := s.preflightAsk(r, t, ip)
+		if err != nil {
+			writeAskPreflightError(w, err)
+			return
+		}
+
+		sseInit(w)
+		w.Header().Set("X-Ask4Me-Request-Id", requestID)
+		fl, _ := w.(http.Flusher)
+		if fl != nil {
+			fl.Flush()
+		}
+
+		ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, t, ip, w)
+		if err != nil {
+			writeCreateAskError(w, err)
+			return
+		}
+		go s.sendNotification(context.Background(), requestID, ar2, interactionURL, ch)
+		go s.expireLoop(context.Background(), requestID, expiresAt)
+
+		s.streamUntilDone(ctx, w, requestID, firstEventID)
+		return
+	}
+
+	if !s.canAccessRequest(t, owner) {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -1088,42 +1209,6 @@ func (s *server) handleAskSSE(w http.ResponseWriter, r *http.Request) {
 	fl, _ := w.(http.Flusher)
 	if fl != nil {
 		fl.Flush()
-	}
-
-	status, _, err := s.db.getRequestStatus(ctx, requestID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if tev, ok := s.hub.getTerminal(requestID); ok {
-				_ = s.sendEvent(w, tev)
-				s.sendDone(w)
-				return
-			}
-			ar, err := parseAskRequestFromHTTP(r)
-			if err != nil {
-				if err.Error() == "method not allowed" {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-			ar2, expiresAt, interactionURL, firstEventID, err := s.createAskWithRequestID(ctx, requestID, ar, w)
-			if err != nil {
-				if strings.Contains(err.Error(), "jsonforms") {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				http.Error(w, "failed to create request", http.StatusInternalServerError)
-				return
-			}
-			go s.sendNotification(context.Background(), requestID, ar2, interactionURL)
-			go s.expireLoop(context.Background(), requestID, expiresAt)
-
-			s.streamUntilDone(ctx, w, requestID, firstEventID)
-			return
-		}
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
 	}
 
 	s.replayEvents(ctx, w, requestID, lastEventID)
@@ -1301,13 +1386,13 @@ func formatShellCommand(bin string, args []string) string {
 	return strings.Join(parts, " ")
 }
 
-func (s *server) sendNotification(ctx context.Context, requestID string, ar askRequest, interactionURL string) {
+func (s *server) sendNotification(ctx context.Context, requestID string, ar askRequest, interactionURL string, ch notifyChannel) {
 	msg := strings.TrimSpace(ar.Body)
 	if msg == "" {
 		msg = "Please respond."
 	}
 
-	sendkey := strings.TrimSpace(s.cfg.ServerChanSendKey)
+	sendkey := strings.TrimSpace(ch.ServerChanSendKey)
 	if sendkey != "" {
 		if ar.ServerChanActionLinks {
 			spec := parseMCD(ar.MCD)
@@ -1338,7 +1423,7 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 		if err != nil {
 			ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
 				"channel": "serverchan",
-				"error":   err.Error(),
+				"error":   s.redactNotifyText(err.Error(), ch),
 			})
 			_ = s.persistTerminalAware(ctx, ev)
 			s.hub.setTerminal(ev)
@@ -1347,11 +1432,14 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 		}
 		if resp != nil && resp.Code != 0 {
 			output, _ := json.Marshal(resp)
-			ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
+			data := map[string]any{
 				"channel": "serverchan",
-				"error":   fmt.Sprintf("serverchan code %d: %s", resp.Code, resp.Message),
-				"output":  truncate(string(output), 2000),
-			})
+				"error":   s.redactNotifyText(fmt.Sprintf("serverchan code %d: %s", resp.Code, resp.Message), ch),
+			}
+			if !s.cfg.MultiUser.Enabled {
+				data["output"] = truncate(string(output), 2000)
+			}
+			ev := s.mustNewEvent(ctx, requestID, "notify.failed", data)
 			_ = s.persistTerminalAware(ctx, ev)
 			s.hub.setTerminal(ev)
 			_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
@@ -1370,7 +1458,7 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 		msg = msg + "\n\n" + fmt.Sprintf("[%s](<%s>)", interactionURL, interactionURL)
 	}
 
-	if len(s.cfg.AppriseURLs) == 0 {
+	if len(ch.AppriseURLs) == 0 {
 		ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
 			"error": "no serverchan_sendkey or apprise_urls configured",
 		})
@@ -1381,9 +1469,8 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 	}
 
 	args := []string{"-vv", "--title", ar.Title, "--body", msg}
-	for _, u := range s.cfg.AppriseURLs {
-		v := normalizeAppriseURL(u)
-		if v != "" {
+	for _, u := range ch.AppriseURLs {
+		if v := normalizeAppriseURL(u); v != "" {
 			args = append(args, v)
 		}
 	}
@@ -1392,26 +1479,34 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 	cmd := exec.CommandContext(ctx, s.cfg.AppriseBin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		ev := s.mustNewEvent(ctx, requestID, "notify.failed", map[string]any{
-			"channel":      "apprise",
-			"error":        err.Error(),
-			"command":      cmdlineSh,
-			"command_sh":   cmdlineSh,
-			"command_args": args,
-			"output":       truncate(string(out), 2000),
-		})
+		data := map[string]any{
+			"channel": "apprise",
+			"error":   s.redactNotifyText(err.Error(), ch),
+		}
+		if s.cfg.MultiUser.Enabled {
+			data["redacted"] = true
+		} else {
+			data["command"] = cmdlineSh
+			data["command_sh"] = cmdlineSh
+			data["command_args"] = args
+			data["output"] = truncate(string(out), 2000)
+		}
+		ev := s.mustNewEvent(ctx, requestID, "notify.failed", data)
 		_ = s.persistTerminalAware(ctx, ev)
 		s.hub.setTerminal(ev)
 		_ = s.db.updateRequestStatus(ctx, requestID, "notify_failed")
 		return
 	}
 
-	ev := s.mustNewEvent(ctx, requestID, "notify.sent", map[string]any{
-		"channel":      "apprise",
-		"command":      cmdlineSh,
-		"command_sh":   cmdlineSh,
-		"command_args": args,
-	})
+	data := map[string]any{
+		"channel": "apprise",
+	}
+	if !s.cfg.MultiUser.Enabled {
+		data["command"] = cmdlineSh
+		data["command_sh"] = cmdlineSh
+		data["command_args"] = args
+	}
+	ev := s.mustNewEvent(ctx, requestID, "notify.sent", data)
 	_ = s.persistTerminalAware(ctx, ev)
 	_ = s.db.updateRequestStatus(ctx, requestID, "delivered")
 }
@@ -1762,11 +1857,30 @@ func loadConfigFromDotenv(path string) (Config, error) {
 		ListenAddr:                  strings.TrimSpace(envFirst("ASK4ME_LISTEN_ADDR", "LISTEN_ADDR")),
 		TerminalCacheSeconds:        parseEnvInt(envFirst("ASK4ME_TERMINAL_CACHE_SECONDS", "TERMINAL_CACHE_SECONDS")),
 	}
+	cfg.MultiUser = MultiUserConfig{
+		Enabled: parseEnvBool(envFirst("ASK4ME_MULTI_USER_ENABLED", "MULTI_USER_ENABLED")),
+		Auth: MultiUserAuthConfig{
+			Mode:        strings.TrimSpace(envFirst("ASK4ME_MULTI_USER_MODE", "MULTI_USER_MODE")),
+			InviteCodes: parseCSVStrings(envFirst("ASK4ME_MULTI_USER_INVITE_CODES", "MULTI_USER_INVITE_CODES")),
+		},
+		Defaults: MultiUserDefaultsConfig{
+			RequestsPerDay:      parseEnvInt(envFirst("ASK4ME_MULTI_USER_REQUESTS_PER_DAY", "MULTI_USER_REQUESTS_PER_DAY")),
+			MaxPending:          parseEnvInt(envFirst("ASK4ME_MULTI_USER_MAX_PENDING", "MULTI_USER_MAX_PENDING")),
+			MaxExpiresInSeconds: parseEnvInt(envFirst("ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS", "MULTI_USER_MAX_EXPIRES_IN_SECONDS")),
+		},
+		Limits: MultiUserLimitsConfig{
+			PerIPRequestsPerHour: parseEnvInt(envFirst("ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR", "MULTI_USER_PER_IP_REQUESTS_PER_HOUR")),
+			PerIPNewKeysPerDay:   parseEnvInt(envFirst("ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY", "MULTI_USER_PER_IP_NEW_KEYS_PER_DAY")),
+			GlobalRequestsPerDay: parseEnvInt(envFirst("ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY", "MULTI_USER_GLOBAL_REQUESTS_PER_DAY")),
+			TrustProxy:           parseEnvBool(envFirst("ASK4ME_MULTI_USER_TRUST_PROXY", "MULTI_USER_TRUST_PROXY")),
+		},
+		AllowedAppriseSchemes: parseCSVStrings(envFirst("ASK4ME_ALLOWED_APPRISE_SCHEMES", "ALLOWED_APPRISE_SCHEMES")),
+	}
+	for _, key := range parseCSVStrings(envFirst("ASK4ME_MULTI_USER_KEYS", "MULTI_USER_KEYS")) {
+		cfg.MultiUser.Auth.Keys = append(cfg.MultiUser.Auth.Keys, MultiUserKeyConfig{Key: key})
+	}
 	if cfg.BaseURL == "" {
 		return Config{}, errors.New("ASK4ME_BASE_URL is required")
-	}
-	if cfg.APIKey == "" {
-		return Config{}, errors.New("ASK4ME_API_KEY is required")
 	}
 	return cfg, cfg.normalize()
 }
@@ -1853,6 +1967,15 @@ func parseEnvInt(s string) int {
 		return 0
 	}
 	return v
+}
+
+func parseEnvBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseCSVStrings(s string) []string {
@@ -1987,6 +2110,17 @@ func main() {
 
 	hub := newRuntimeHub(time.Duration(cfg.TerminalCacheSeconds) * time.Second)
 	srv := &server{cfg: cfg, db: st, hub: hub}
+	if err := srv.initTenants(); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+	if cfg.MultiUser.Enabled {
+		if strings.TrimSpace(cfg.APIKey) != "" {
+			fmt.Fprintln(os.Stderr, "warning: api_key is ignored in multi-user mode; add it to multi_user.auth.keys if you still need it")
+		}
+		fmt.Fprintf(os.Stdout, "multi-user enabled: mode=%s keys=%d invites=%d\n",
+			cfg.MultiUser.Auth.Mode, len(cfg.MultiUser.Auth.Keys), len(cfg.MultiUser.Auth.InviteCodes))
+	}
 
 	httpSrv := &http.Server{
 		Addr:              cfg.ListenAddr,

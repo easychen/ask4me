@@ -10,6 +10,7 @@ function printHelp() {
       "",
       "Usage:",
       "  ask4me-cli -h <host> -k <apiKey> [--title <t>] [--body <b>] [--mcd <m>] [--expires <sec>] [--json]",
+      "  ask4me-cli -h <host> -k <apiKey> --notify-sendkey <sendkey> [--title <t>] [--body <b>]",
       "",
       "Options:",
       "  -h, --host <url>     Server base URL, e.g. http://localhost:8080",
@@ -18,6 +19,8 @@ function printHelp() {
       "  --body <string>      Body",
       "  --mcd <string>       MCD",
       "  --expires <seconds>  expires_in_seconds",
+      "  --notify-sendkey <s> ServerChan SendKey for this request (multi-user mode)",
+      "  --apprise-url <url>  Apprise URL for this request; repeatable",
       "  --json               Print final result as JSON",
       "  --help               Show help",
       ""
@@ -36,7 +39,18 @@ function toIntOrNull(v) {
 }
 
 function normalizeArgv(argv) {
-  const longNames = new Set(["title", "body", "mcd", "expires", "json", "help", "host", "key"]);
+  const longNames = new Set([
+    "title",
+    "body",
+    "mcd",
+    "expires",
+    "json",
+    "help",
+    "host",
+    "key",
+    "notify-sendkey",
+    "apprise-url"
+  ]);
   return argv.map((a) => {
     if (a.startsWith("--")) return a;
     if (!a.startsWith("-") || a === "-") return a;
@@ -58,6 +72,8 @@ async function main() {
       body: { type: "string" },
       mcd: { type: "string" },
       expires: { type: "string" },
+      "notify-sendkey": { type: "string" },
+      "apprise-url": { type: "string", multiple: true },
       json: { type: "boolean" },
       help: { type: "boolean" }
     },
@@ -78,11 +94,18 @@ async function main() {
 
   const endpoint = `${trimSlash(host)}/v1/ask`;
   const expiresInSeconds = toIntOrNull(values.expires);
+  const notifySendKey = values["notify-sendkey"];
+  const appriseURLs = values["apprise-url"] ?? [];
+  const notify = {
+    ...(notifySendKey ? { serverchan_sendkey: notifySendKey } : {}),
+    ...(appriseURLs.length > 0 ? { apprise_urls: appriseURLs } : {})
+  };
   const payload = {
     ...(values.title ? { title: values.title } : {}),
     ...(values.body ? { body: values.body } : {}),
     ...(values.mcd ? { mcd: values.mcd } : {}),
-    ...(expiresInSeconds ? { expires_in_seconds: expiresInSeconds } : {})
+    ...(expiresInSeconds ? { expires_in_seconds: expiresInSeconds } : {}),
+    ...(Object.keys(notify).length > 0 ? { notify } : {})
   };
 
   const res = await ask({

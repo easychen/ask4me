@@ -56,7 +56,7 @@ cp .env.example .env
 At minimum you need:
 
 - `ASK4ME_BASE_URL`: externally accessible base URL used to build interaction links (sent via notifications)
-- `ASK4ME_API_KEY`: API auth key
+- `ASK4ME_API_KEY`: API auth key (required in single-user mode; ignored when `multi_user.enabled` is on — add the old key to `multi_user.auth.keys`; see “Multi-user / trial mode” below)
 - One of the notification channels (otherwise requests will quickly end with `notify.failed`):
   - `ASK4ME_SERVERCHAN_SENDKEY`
   - or `ASK4ME_APPRISE_URLS`
@@ -116,6 +116,90 @@ docker run -d \
 ```
 
 The SQLite database is stored at `/data/ask4me.db` inside the container — mount a host volume to persist it across restarts.
+
+## Multi-user / trial mode (off by default)
+
+The default is still single-user: one global `api_key` and one global notification channel. Set `multi_user.enabled: true` to run an **accountless multi-tenant** instance: each API key is a tenant, used only for request isolation and quotas — no registration or login.
+
+### 1) Config
+
+```yaml
+multi_user:
+  enabled: true
+  auth:
+    mode: allowlist          # allowlist | open
+    keys:
+      - key: "a4m_replace_me_123456"
+        name: "alice"
+        requests_per_day: 500
+        max_pending: 10
+    # open: users self-generate keys as a4m_<invite>_<random>
+    invite_codes: ["trial2026"]
+  defaults:
+    requests_per_day: 200
+    max_pending: 5
+    max_expires_in_seconds: 86400
+  limits:
+    per_ip_requests_per_hour: 60
+    per_ip_new_keys_per_day: 10
+    global_requests_per_day: 5000
+    trust_proxy: false
+  allowed_apprise_schemes: ["schan","tgram","discord","slack","ntfy","gotify"]
+```
+
+- `allowlist`: only explicitly listed keys are accepted; `api_key` is **not** automatically accepted in multi-user mode.
+- `open`: listed keys still work; keys matching `a4m_<invite>_<random>` are also accepted, where `invite` is in `invite_codes` and `random` is at least 16 chars. Remove an invite to revoke a batch.
+- With `enabled: false`, behavior is unchanged and `api_key` is still required.
+- In multi-user mode `api_key` is ignored; to keep the old key, add it explicitly to `multi_user.auth.keys`. Pre-migration requests without an owner are not readable via the API and will expire.
+
+**Upgrade compatibility**: old single-user configs need no changes. Without `multi_user` (or with `enabled: false`), `api_key`, the global notification channel, `?key=`, and the no-channel `notify.failed` behavior are all unchanged; only explicitly enabling `multi_user` switches to the new rules. If the old `api_key` is still present when multi-user is enabled: `open` mode prints a warning, while `allowlist` mode fails with a config error (no `auth.keys`); add it to `auth.keys` as instructed.
+
+Generate a self-service key for `open` mode:
+
+```bash
+printf 'a4m_%s_%s\n' 'trial2026' "$(openssl rand -hex 16)"
+```
+
+### 2) Per-request notification channel
+
+In multi-user mode every key **must** send `notify`; the global `serverchan_sendkey` / `apprise_urls` only apply in single-user mode, so no user request can push to the operator's phone. A per-request channel looks like this:
+
+```bash
+curl -sS --max-time 120 -X POST 'https://your-domain.com/v1/ask' \
+  -H 'Authorization: Bearer a4m_trial2026_xxxxxxxxxxxxxxxx' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "Approve deploy",
+    "body": "Please confirm.",
+    "notify": { "serverchan_sendkey": "SCT..." },
+    "mcd": ":::buttons\n- [OK](ok)\n- [Later](later)\n:::"
+  }'
+```
+
+- Use `notify.serverchan_sendkey` or `notify.apprise_urls`; both may be set, and ServerChan wins.
+- Credentials are kept in memory for this request only — never stored in the DB or in events. In multi-user mode, `notify.failed` / `notify.sent` events are redacted.
+- In multi-user mode the API key is read from the `Authorization` header only; `?key=` is rejected to avoid leaking keys into URL logs.
+- In multi-user mode a request without `notify` fails with `400` before it is created; single-user mode without a channel still ends in `notify.failed`.
+
+### 3) Quotas
+
+- Per key: `requests_per_day`, `max_pending`
+- Per IP: `per_ip_requests_per_hour`, `per_ip_new_keys_per_day`
+- Global: `global_requests_per_day`
+- `expires_in_seconds` is clamped to `max_expires_in_seconds`
+- Over-limit responses are `429` with `Retry-After` and JSON `{"error":"quota_exceeded",...}`
+
+Note: in `open` mode a per-key quota can be bypassed by generating a new key; the per-IP and global limits are the real backstop. For a public trial, add Cloudflare or gateway rate limiting.
+
+### 4) Request isolation
+
+In multi-user mode `requests` stores `api_key_hash`, and every `request_id` continuation and SSE replay checks the owner. A different key gets `404` for the same `request_id` and cannot read another tenant's answer. Pre-migration requests without an owner are not readable and will expire.
+
+### 5) Environment variables
+
+`ASK4ME_MULTI_USER_ENABLED`, `ASK4ME_MULTI_USER_MODE`, `ASK4ME_MULTI_USER_KEYS`, `ASK4ME_MULTI_USER_INVITE_CODES`, `ASK4ME_MULTI_USER_REQUESTS_PER_DAY`, `ASK4ME_MULTI_USER_MAX_PENDING`, `ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS`, `ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR`, `ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY`, `ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY`, `ASK4ME_MULTI_USER_TRUST_PROXY`, `ASK4ME_ALLOWED_APPRISE_SCHEMES`.
+
+> E2EE is the next phase and is not implemented yet; there is no `e2ee` config section in this version.
 
 ## Quickstart: nonStream mode + raw requests (curl)
 
@@ -334,7 +418,7 @@ curl -sS --max-time 120 -G 'http://localhost:8080/v1/ask' \
   --data-urlencode $'mcd=:::buttons\n- [OK](ok)\n- [Later](later)\n:::'
 ```
 
-Security note: query params may be logged by proxies/servers. Prefer POST + Authorization when possible.
+Security note: query params may be logged by proxies/servers. Prefer POST + Authorization when possible. In multi-user mode `?key=` is rejected; use the `Authorization` header.
 
 ### 3) Resume waiting after timeout (with request_id)
 
@@ -502,6 +586,8 @@ SSE output format:
 
 The SDK currently uses SSE mode by default (automatically adds `stream=true`), suitable for consuming events in real time in your program.
 
+In multi-user mode, put `notify` inside `payload`; the SDK passes it through (the key still goes in the Authorization header via `apiKey`).
+
 Install:
 
 ```bash
@@ -552,6 +638,15 @@ Example:
 
 ```bash
 ask4me-cli -h http://localhost:8080 -k change-me --title 'Ask4Me' --body 'Please respond.'
+```
+
+In multi-user mode, pass the notification channel with the request:
+
+```bash
+ask4me-cli -h https://your-domain.com -k a4m_trial2026_xxxxxxxxxxxxxxxx \
+  --title 'Approve deploy' --body 'Please confirm.' \
+  --notify-sendkey 'SCT...'
+# or repeatable: --apprise-url 'schan://...'
 ```
 
 ## Build from source (optional)
