@@ -1,6 +1,9 @@
 name: ghcr-dev
 
 on:
+  push:
+    branches:
+      - feat/e2ee
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +18,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ github.event.inputs.tag || 'feat-e2ee' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +44,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ inputs.tag }}
+          tags: ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -54,7 +59,7 @@ jobs:
           target: slim
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ inputs.tag }}-slim
+          tags: ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}-slim
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -66,8 +71,8 @@ jobs:
           {
             echo "### GHCR images"
             echo ""
-            echo "- standard: \`ghcr.io/${{ github.repository }}:${{ inputs.tag }}\`"
+            echo "- standard: \`ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}\`"
             echo "  - digest: \`${{ steps.standard.outputs.digest }}\`"
-            echo "- slim: \`ghcr.io/${{ github.repository }}:${{ inputs.tag }}-slim\`"
+            echo "- slim: \`ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}-slim\`"
             echo "  - digest: \`${{ steps.slim.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
