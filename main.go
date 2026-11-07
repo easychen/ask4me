@@ -49,6 +49,7 @@ type Config struct {
 	ListenAddr                  string          `yaml:"listen_addr"`
 	TerminalCacheSeconds        int             `yaml:"terminal_cache_seconds"`
 	MultiUser                   MultiUserConfig `yaml:"multi_user"`
+	E2EE                        E2EEConfig      `yaml:"e2ee"`
 }
 
 func (c *Config) normalize() error {
@@ -60,6 +61,9 @@ func (c *Config) normalize() error {
 		return fmt.Errorf("invalid base_url: %w", err)
 	}
 	if err := c.MultiUser.normalize(); err != nil {
+		return err
+	}
+	if err := c.E2EE.normalize(c.BaseURL); err != nil {
 		return err
 	}
 	if strings.TrimSpace(c.APIKey) == "" && !c.MultiUser.Enabled {
@@ -252,6 +256,10 @@ func newStore(db *sql.DB) (*store, error) {
 		"jsonforms_renderer":      "TEXT",
 		"api_key_hash":            "TEXT",
 		"client_ip":               "TEXT",
+		"e2ee_enabled":            "INTEGER NOT NULL DEFAULT 0",
+		"e2ee_salt":               "TEXT",
+		"e2ee_iterations":         "INTEGER NOT NULL DEFAULT 0",
+		"e2ee_answers":            "INTEGER NOT NULL DEFAULT 0",
 	}); err != nil {
 		return nil, err
 	}
@@ -314,19 +322,29 @@ func (s *store) createRequest(
 	expiresAt time.Time,
 	jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer sql.NullString,
 	apiKeyHash, clientIP string,
+	e2eeEnabled bool, e2eeSalt string, e2eeIterations int, e2eeAnswers bool,
 ) error {
 	now := time.Now().Unix()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO requests(
 			request_id,title,body,mcd,status,expires_at,created_at,updated_at,
 			jsonforms_schema_json,jsonforms_uischema_json,jsonforms_data_json,jsonforms_submit_label,jsonforms_renderer,
-			api_key_hash,client_ip
-		) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?)`,
+			api_key_hash,client_ip,
+			e2ee_enabled,e2ee_salt,e2ee_iterations,e2ee_answers
+		) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?, ?,?,?,?)`,
 		reqID, title, body, mcd, status, expiresAt.Unix(), now, now,
 		jsonformsSchemaJSON, jsonformsUISchemaJSON, jsonformsDataJSON, jsonformsSubmitLabel, jsonformsRenderer,
 		nullIfEmpty(apiKeyHash), nullIfEmpty(clientIP),
+		boolToInt(e2eeEnabled), nullIfEmpty(e2eeSalt), e2eeIterations, boolToInt(e2eeAnswers),
 	)
 	return err
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (s *store) updateRequestStatus(ctx context.Context, reqID, status string) error {
@@ -488,6 +506,7 @@ type askRequest struct {
 		Renderer    string          `json:"renderer"`
 	} `json:"jsonforms"`
 	Notify                *notifySpec `json:"notify"`
+	E2EE                  *e2eeSpec   `json:"e2ee"`
 	ExpiresInSeconds      int         `json:"expires_in_seconds"`
 	ServerChanActionLinks bool        `json:"serverchan_action_links"`
 }
@@ -574,16 +593,20 @@ func parseMCD(mcd string) mcdSpec {
 }
 
 type htmlData struct {
-	Title     string
-	Body      string
-	Buttons   []buttonSpec
-	Input     *inputSpec
-	Action    string
-	Text      string
-	Done      bool
-	Token     string
-	RequestID string
-	JsonForms bool
+	Title          string
+	Body           string
+	Buttons        []buttonSpec
+	Input          *inputSpec
+	Action         string
+	Text           string
+	Done           bool
+	Token          string
+	RequestID      string
+	JsonForms      bool
+	E2EE           bool
+	E2EESalt       string
+	E2EEIterations int
+	E2EEAnswers    bool
 }
 
 var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
@@ -604,86 +627,200 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
     #app input[type="checkbox"],#app input[type="radio"]{width:auto;padding:0;border-radius:0;}
     .ok{padding:12px;border:1px solid #2da44e;border-radius:10px;background:#dafbe1;}
     .err{padding:12px;border:1px solid #d1242f;border-radius:10px;background:#ffebe9;color:#24292f;}
+    #e2ee-unlock{margin-top:16px;padding:14px;border:1px solid #d0d7de;border-radius:10px;background:#f6f8fa;}
+    #e2ee-unlock input[type="password"]{width:100%;padding:10px;border:1px solid #d0d7de;border-radius:10px;box-sizing:border-box;}
+    #e2ee-unlock .row{margin-top:10px;}
   </style>
 </head>
 <body>
-  <h1>{{.Title}}</h1>
-  <pre>{{.Body}}</pre>
-
-  {{if .Done}}
-    <div class="ok">Submitted.</div>
-    {{if .JsonForms}}
+  {{if .E2EE}}
+  <div id="e2ee-unlock">
+    <p style="margin-top:0">此消息已加密，请输入口令查看。</p>
+    <div id="e2ee-err" class="err" style="display:none"></div>
+    <input id="e2ee-password" type="password" autocomplete="off" placeholder="口令"/>
     <div class="row">
-      <button type="button" onclick="window.close()">关闭窗口</button>
+      <button id="e2ee-unlock-btn" type="button">解密</button>
     </div>
-    {{end}}
-  {{else}}
-    {{if .JsonForms}}
+  </div>
+  {{end}}
+
+  {{if and .E2EE .Done}}
+  <div class="ok" style="margin-top:16px">Submitted.</div>
+  {{end}}
+
+  <div id="secure" {{if .E2EE}}style="display:none"{{end}}>
+    <h1>{{.Title}}</h1>
+    <pre id="body">{{.Body}}</pre>
+
+    {{if .Done}}
+      {{if not .E2EE}}<div class="ok">Submitted.</div>{{end}}
+      {{if .JsonForms}}
       <div class="row">
-        <div id="app">Loading...</div>
-        <div id="err" class="row" style="display:none"></div>
-        <noscript>
-          <div class="err">JavaScript is required to render this form.</div>
-        </noscript>
-        <form id="submitForm" method="post" action="./submit?k={{urlquery .Token}}">
-          <input type="hidden" name="payload_json" id="payload_json" value=""/>
-          <button id="submitBtn" type="submit">Submit</button>
-        </form>
+        <button type="button" onclick="window.close()">关闭窗口</button>
       </div>
-      <script src="/static/jsonforms.bundle.js"></script>
-      <script>
-        (function () {
-          var elErr = document.getElementById("err");
-          function showError(message) {
-            if (!elErr) return;
-            elErr.className = "err";
-            elErr.textContent = message;
-            elErr.style.display = "block";
-          }
-
-          var api = window.Ask4MeJsonForms;
-          if (!api || !api.mount) {
-            showError("Failed to load form renderer.");
-            var elApp = document.getElementById("app");
-            if (elApp) elApp.textContent = "";
-            return;
-          }
-
-          api.mount({
-            specUrl: "./spec?k={{urlquery .Token}}",
-            appId: "app",
-            errId: "err",
-            submitBtnId: "submitBtn",
-            payloadInputId: "payload_json",
-            formId: "submitForm"
-          });
-        })();
-      </script>
-    {{else}}
-      {{if .Buttons}}
-        <div class="row">
-          {{range .Buttons}}
-            <form method="post" style="display:inline" action="./submit?k={{urlquery $.Token}}">
-              <input type="hidden" name="action" value="{{.Value}}"/>
-              <button type="submit">{{.Label}}</button>
-            </form>
-          {{end}}
-        </div>
       {{end}}
-
-      {{if .Input}}
+    {{else}}
+      {{if .JsonForms}}
         <div class="row">
-          <form method="post" action="./submit?k={{urlquery .Token}}">
-            <label>{{.Input.Label}}</label>
-            <div style="height:8px"></div>
-            <input type="text" name="text" value=""/>
-            <div style="height:10px"></div>
-            <button type="submit">{{.Input.Submit}}</button>
+          <div id="app">Loading...</div>
+          <div id="err" class="row" style="display:none"></div>
+          <noscript>
+            <div class="err">JavaScript is required to render this form.</div>
+          </noscript>
+          <form id="submitForm" method="post" action="./submit?k={{urlquery .Token}}">
+            <input type="hidden" name="payload_json" id="payload_json" value=""/>
+            <button id="submitBtn" type="submit">Submit</button>
           </form>
         </div>
+      {{else}}
+        {{if .Buttons}}
+          <div class="row">
+            {{range .Buttons}}
+              <form method="post" style="display:inline" action="./submit?k={{urlquery $.Token}}">
+                <input type="hidden" name="action" value="{{.Value}}"/>
+                <button type="submit">{{.Label}}</button>
+              </form>
+            {{end}}
+          </div>
+        {{end}}
+
+        {{if .Input}}
+          <div class="row">
+            <form class="submit-form" method="post" action="./submit?k={{urlquery .Token}}">
+              <label>{{.Input.Label}}</label>
+              <div style="height:8px"></div>
+              <input type="text" name="text" value=""/>
+              <div style="height:10px"></div>
+              <button type="submit">{{.Input.Submit}}</button>
+            </form>
+          </div>
+        {{end}}
       {{end}}
     {{end}}
-  {{end}}
+  </div>
+
+  {{if .E2EE}}<script src="/static/e2ee.bundle.js"></script>{{end}}
+  {{if .JsonForms}}<script src="/static/jsonforms.bundle.js"></script>{{end}}
+  <script>
+    (function () {
+      var E2EE = {{if .E2EE}}true{{else}}false{{end}};
+      var E2EE_ANSWERS = {{if .E2EEAnswers}}true{{else}}false{{end}};
+      var E2EE_SALT = "{{.E2EESalt}}";
+      var E2EE_ITERATIONS = {{.E2EEIterations}};
+      var JSON_FORMS = {{if .JsonForms}}true{{else}}false{{end}};
+      var DONE = {{if .Done}}true{{else}}false{{end}};
+      var SECURE = document.getElementById("secure");
+      var UNLOCK = document.getElementById("e2ee-unlock");
+      var UNLOCK_ERR = document.getElementById("e2ee-err");
+      var cryptoKey = null;
+
+      function showUnlockError(message) {
+        if (!UNLOCK_ERR) return;
+        UNLOCK_ERR.className = "err";
+        UNLOCK_ERR.textContent = message;
+        UNLOCK_ERR.style.display = "block";
+      }
+      function clearUnlockError() {
+        if (UNLOCK_ERR) UNLOCK_ERR.style.display = "none";
+      }
+      function reveal() {
+        if (UNLOCK) UNLOCK.style.display = "none";
+        if (SECURE) SECURE.style.display = "";
+        var h1 = SECURE ? SECURE.querySelector("h1") : null;
+        if (h1) document.title = h1.textContent;
+      }
+
+      async function decryptTextNodes(root, key) {
+        var api = window.Ask4MeE2EE;
+        if (!api || !root) return;
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        var nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        for (var i = 0; i < nodes.length; i++) {
+          var v = nodes[i].nodeValue;
+          if (v && v.indexOf("enc:v1:") >= 0) {
+            nodes[i].nodeValue = await api.replaceTokens(v, key);
+          }
+        }
+      }
+
+      function mountJsonForms(key) {
+        var api = window.Ask4MeJsonForms;
+        if (!api || !api.mount) {
+          showUnlockError("Failed to load form renderer.");
+          return;
+        }
+        api.mount({
+          specUrl: "./spec?k={{urlquery .Token}}",
+          appId: "app",
+          errId: "err",
+          submitBtnId: "submitBtn",
+          payloadInputId: "payload_json",
+          formId: "submitForm",
+          cryptoKey: key || undefined,
+          e2eeAnswers: E2EE_ANSWERS,
+          onReady: reveal,
+          onError: showUnlockError
+        });
+      }
+
+      async function unlock(password) {
+        clearUnlockError();
+        var api = window.Ask4MeE2EE;
+        if (!api) {
+          showUnlockError("Failed to load decryptor.");
+          return;
+        }
+        try {
+          cryptoKey = await api.deriveKey(password, E2EE_SALT, E2EE_ITERATIONS);
+          await decryptTextNodes(SECURE, cryptoKey);
+          if (JSON_FORMS && !DONE) {
+            mountJsonForms(cryptoKey);
+            return;
+          }
+          reveal();
+        } catch (e) {
+          showUnlockError("口令错误或内容已损坏，请重试。");
+        }
+      }
+
+      if (E2EE) {
+        var btn = document.getElementById("e2ee-unlock-btn");
+        var pwd = document.getElementById("e2ee-password");
+        if (btn) btn.addEventListener("click", function () { unlock(pwd ? pwd.value : ""); });
+        if (pwd) pwd.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { e.preventDefault(); unlock(pwd.value); }
+        });
+      } else if (JSON_FORMS && !DONE) {
+        mountJsonForms(null);
+      }
+
+      if (E2EE && E2EE_ANSWERS) {
+        var forms = document.querySelectorAll("form.submit-form");
+        for (var i = 0; i < forms.length; i++) {
+          (function (form) {
+            form.addEventListener("submit", function (e) {
+              var input = form.querySelector('input[name="text"]');
+              if (!input) return;
+              if (!input.value.trim()) return;
+              if (!cryptoKey) {
+                e.preventDefault();
+                showUnlockError("请先输入口令。");
+                return;
+              }
+              e.preventDefault();
+              window.Ask4MeE2EE.encryptString(input.value, cryptoKey).then(function (token) {
+                input.value = token;
+                form.submit();
+              }).catch(function () {
+                showUnlockError("加密失败，请重试。");
+              });
+            });
+          })(forms[i]);
+        }
+      }
+    })();
+  </script>
 </body>
 </html>`))
 
@@ -949,7 +1086,16 @@ func (s *server) createAskWithRequestID(ctx context.Context, requestID string, a
 		apiKeyHash = t.KeyHash
 		clientIPValue = ip
 	}
-	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt, schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer, apiKeyHash, clientIPValue); err != nil {
+	e2eeEnabled := ar.E2EE != nil && ar.E2EE.Enabled
+	e2eeSalt := ""
+	e2eeIterations := 0
+	e2eeAnswers := false
+	if e2eeEnabled {
+		e2eeSalt = ar.E2EE.Salt
+		e2eeIterations = ar.E2EE.Iterations
+		e2eeAnswers = s.e2eeAnswers(ar)
+	}
+	if err := s.db.createRequest(ctx, requestID, ar.Title, ar.Body, ar.MCD, "created", expiresAt, schemaJSON, uiSchemaJSON, dataJSON, submitLabel, renderer, apiKeyHash, clientIPValue, e2eeEnabled, e2eeSalt, e2eeIterations, e2eeAnswers); err != nil {
 		return askRequest{}, time.Time{}, "", "", err
 	}
 
@@ -960,10 +1106,19 @@ func (s *server) createAskWithRequestID(ctx context.Context, requestID string, a
 	}
 
 	interactionURL := s.makeInteractionURL(requestID, tokenPlain)
-	ev := s.mustNewEvent(ctx, requestID, "request.created", map[string]any{
+	evData := map[string]any{
 		"interaction_url": interactionURL,
 		"expires_at":      expiresAt.UTC().Format(time.RFC3339),
-	})
+	}
+	if e2eeEnabled {
+		evData["e2ee"] = map[string]any{
+			"enabled":    true,
+			"salt":       e2eeSalt,
+			"iterations": e2eeIterations,
+			"answers":    e2eeAnswers,
+		}
+	}
+	ev := s.mustNewEvent(ctx, requestID, "request.created", evData)
 
 	if sendTo != nil {
 		if err := s.persistAndSendEvent(ctx, sendTo, ev); err != nil {
@@ -983,6 +1138,9 @@ func (s *server) preflightAsk(r *http.Request, t tenant, ip string) (askRequest,
 			return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusMethodNotAllowed, Message: "method not allowed"}
 		}
 		return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusBadRequest, Message: "bad request"}
+	}
+	if err := s.normalizeE2EE(&ar); err != nil {
+		return askRequest{}, notifyChannel{}, &askHTTPError{Status: http.StatusBadRequest, Message: err.Error()}
 	}
 	ch, err := s.resolveNotifyChannel(ar)
 	if err != nil {
@@ -1387,14 +1545,13 @@ func formatShellCommand(bin string, args []string) string {
 }
 
 func (s *server) sendNotification(ctx context.Context, requestID string, ar askRequest, interactionURL string, ch notifyChannel) {
-	msg := strings.TrimSpace(ar.Body)
-	if msg == "" {
-		msg = "Please respond."
-	}
+	msg := s.notificationBody(ar)
+	title := s.notificationTitle(ar)
+	encrypted := s.e2eeActive(ar)
 
 	sendkey := strings.TrimSpace(ch.ServerChanSendKey)
 	if sendkey != "" {
-		if ar.ServerChanActionLinks {
+		if ar.ServerChanActionLinks && !encrypted {
 			spec := parseMCD(ar.MCD)
 			if len(spec.Buttons) > 0 && (ar.JsonForms == nil || len(bytes.TrimSpace(ar.JsonForms.Schema)) == 0) {
 				actionLinks := make([]string, 0, len(spec.Buttons))
@@ -1417,7 +1574,7 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 			msg = msg + "\n\n" + fmt.Sprintf("[%s](<%s>)", interactionURL, interactionURL)
 		}
 
-		resp, err := serverchan_sdk.ScSend(sendkey, ar.Title, msg, &serverchan_sdk.ScSendOptions{
+		resp, err := serverchan_sdk.ScSend(sendkey, title, msg, &serverchan_sdk.ScSendOptions{
 			Tags: "ask4me",
 		})
 		if err != nil {
@@ -1468,7 +1625,7 @@ func (s *server) sendNotification(ctx context.Context, requestID string, ar askR
 		return
 	}
 
-	args := []string{"-vv", "--title", ar.Title, "--body", msg}
+	args := []string{"-vv", "--title", title, "--body", msg}
 	for _, u := range ch.AppriseURLs {
 		if v := normalizeAppriseURL(u); v != "" {
 			args = append(args, v)
@@ -1763,12 +1920,13 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var title, body, mcd string
-	var schemaJSON sql.NullString
+	var schemaJSON, e2eeSalt sql.NullString
+	var e2eeEnabled, e2eeIterations, e2eeAnswers int
 	err = s.db.db.QueryRowContext(
 		r.Context(),
-		`SELECT title, body, mcd, jsonforms_schema_json FROM requests WHERE request_id=?`,
+		`SELECT title, body, mcd, jsonforms_schema_json, e2ee_enabled, e2ee_salt, e2ee_iterations, e2ee_answers FROM requests WHERE request_id=?`,
 		requestID,
-	).Scan(&title, &body, &mcd, &schemaJSON)
+	).Scan(&title, &body, &mcd, &schemaJSON, &e2eeEnabled, &e2eeSalt, &e2eeIterations, &e2eeAnswers)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -1786,14 +1944,18 @@ func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := htmlData{
-		Title:     title,
-		Body:      body,
-		Buttons:   spec.Buttons,
-		Input:     spec.Input,
-		Done:      done,
-		Token:     tokenPlain,
-		RequestID: requestID,
-		JsonForms: useJSONForms,
+		Title:          title,
+		Body:           body,
+		Buttons:        spec.Buttons,
+		Input:          spec.Input,
+		Done:           done,
+		Token:          tokenPlain,
+		RequestID:      requestID,
+		JsonForms:      useJSONForms,
+		E2EE:           e2eeEnabled != 0,
+		E2EESalt:       e2eeSalt.String,
+		E2EEIterations: e2eeIterations,
+		E2EEAnswers:    e2eeAnswers != 0,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = pageTpl.Execute(w, data)
@@ -1844,7 +2006,13 @@ func loadConfigFromDotenv(path string) (Config, error) {
 	for k, v := range m {
 		_ = os.Setenv(k, v)
 	}
+	return loadConfigFromEnv()
+}
 
+// loadConfigFromEnv builds a Config purely from process environment variables.
+// This is what the scratch/slim container uses: there is no shell entrypoint to
+// materialize a .env file.
+func loadConfigFromEnv() (Config, error) {
 	cfg := Config{
 		BaseURL:                     strings.TrimSpace(envFirst("ASK4ME_BASE_URL", "BASE_URL")),
 		APIKey:                      strings.TrimSpace(envFirst("ASK4ME_API_KEY", "API_KEY")),
@@ -1878,6 +2046,11 @@ func loadConfigFromDotenv(path string) (Config, error) {
 	}
 	for _, key := range parseCSVStrings(envFirst("ASK4ME_MULTI_USER_KEYS", "MULTI_USER_KEYS")) {
 		cfg.MultiUser.Auth.Keys = append(cfg.MultiUser.Auth.Keys, MultiUserKeyConfig{Key: key})
+	}
+	cfg.E2EE = E2EEConfig{
+		Enabled:               parseEnvBool(envFirst("ASK4ME_E2EE_ENABLED", "E2EE_ENABLED")),
+		KDFIterations:         parseEnvInt(envFirst("ASK4ME_E2EE_KDF_ITERATIONS", "E2EE_KDF_ITERATIONS")),
+		EncryptAnswersDefault: parseEnvBoolPtr(envFirst("ASK4ME_E2EE_ENCRYPT_ANSWERS_DEFAULT", "E2EE_ENCRYPT_ANSWERS_DEFAULT")),
 	}
 	if cfg.BaseURL == "" {
 		return Config{}, errors.New("ASK4ME_BASE_URL is required")
@@ -1931,7 +2104,11 @@ func loadConfigAuto(configPath string) (Config, string, error) {
 		cfg, err := loadConfigYAML(p)
 		return cfg, p, err
 	}
-	return Config{}, "", errors.New("no config found: expected ./.env or ./ask4me.yaml (or ./ask for me.yml)")
+	if cfg, err := loadConfigFromEnv(); err == nil {
+		return cfg, "env", nil
+	} else {
+		return Config{}, "", fmt.Errorf("no config found: expected ./.env or ./ask4me.yaml, or ASK4ME_* environment variables (%v)", err)
+	}
 }
 
 func fileExists(path string) bool {
@@ -1976,6 +2153,14 @@ func parseEnvBool(s string) bool {
 	default:
 		return false
 	}
+}
+
+func parseEnvBoolPtr(s string) *bool {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	v := parseEnvBool(s)
+	return &v
 }
 
 func parseCSVStrings(s string) []string {
@@ -2113,6 +2298,10 @@ func main() {
 	if err := srv.initTenants(); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
+	}
+	if cfg.E2EE.Enabled {
+		fmt.Fprintf(os.Stdout, "e2ee enabled (per-request opt-in): iterations=%d answers_default=%v\n",
+			cfg.E2EE.KDFIterations, cfg.E2EE.encryptAnswersDefault())
 	}
 	if cfg.MultiUser.Enabled {
 		if strings.TrimSpace(cfg.APIKey) != "" {

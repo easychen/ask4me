@@ -91,6 +91,12 @@ docker pull easychen/ask4me:latest
 docker pull ghcr.io/easychen/ask4me:latest
 ```
 
+Build the minimal image yourself (`scratch`, no shell, static binary + CA + zoneinfo):
+
+```bash
+docker build --target slim -t ask4me:slim .
+```
+
 Run with an env file:
 
 ```bash
@@ -116,6 +122,8 @@ docker run -d \
 ```
 
 The SQLite database is stored at `/data/ask4me.db` inside the container — mount a host volume to persist it across restarts.
+
+Ubuntu deployment guide (Chinese; Docker Compose + Caddy, standard and `scratch` slim images): [docs/ubuntu-deploy.md](docs/ubuntu-deploy.md).
 
 ## Multi-user / trial mode (off by default)
 
@@ -200,6 +208,74 @@ In multi-user mode `requests` stores `api_key_hash`, and every `request_id` cont
 `ASK4ME_MULTI_USER_ENABLED`, `ASK4ME_MULTI_USER_MODE`, `ASK4ME_MULTI_USER_KEYS`, `ASK4ME_MULTI_USER_INVITE_CODES`, `ASK4ME_MULTI_USER_REQUESTS_PER_DAY`, `ASK4ME_MULTI_USER_MAX_PENDING`, `ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS`, `ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR`, `ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY`, `ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY`, `ASK4ME_MULTI_USER_TRUST_PROXY`, `ASK4ME_ALLOWED_APPRISE_SCHEMES`.
 
 > E2EE is the next phase and is not implemented yet; there is no `e2ee` config section in this version.
+
+## End-to-end encryption (E2EE, off by default)
+
+When E2EE is enabled, the caller encrypts locally in the SDK/CLI and the server stores only ciphertext. Answers are encrypted in the browser and decrypted by the caller. The server never sees the password and never performs cryptography. The full format, threat model, and test vectors are in [E2EE.md](E2EE.md).
+
+### Config
+
+```yaml
+e2ee:
+  enabled: true
+  kdf_iterations: 310000
+  encrypt_answers_default: true
+```
+
+- `enabled: true` only allows E2EE on this server; it **never forces** a request. A request opts in with `e2ee.enabled: true`, and requests without it keep working in plaintext.
+- On one multi-user instance, some users can encrypt and others can stay plaintext.
+- HTTPS is required (`http://localhost` / `127.0.0.1` is allowed for development).
+- Off by default; when the server disables it, requests carrying `e2ee` get `400`.
+
+### Request shape
+
+```json
+{
+  "title": "enc:v1:...",
+  "body": "enc:v1:...",
+  "jsonforms": {
+    "schema": { "type": "object", "properties": { "name": { "type": "string", "title": "enc:v1:..." } } },
+    "data": "enc:v1:..."
+  },
+  "e2ee": {
+    "enabled": true,
+    "salt": "base64url-16B",
+    "iterations": 310000,
+    "answers": true
+  },
+  "notify": { "serverchan_sendkey": "SCT..." }
+}
+```
+
+- Structure (`schema` / `uischema` / MCD blocks) stays plaintext so JSON Forms can still render.
+- Body, title, form display strings, initial `data`, and answers are ciphertext.
+- Button `action` and MCD values stay plaintext (ServerChan Action Links depend on them).
+- Notifications only contain “encrypted message + link”, never the body.
+
+### SDK / CLI
+
+```js
+const { result } = await ask({
+  endpoint: "https://your-domain.com/v1/ask",
+  apiKey: "a4m_...",
+  e2ee: { password: "shared-out-of-band" },
+  payload: {
+    title: "Approve deploy",
+    body: "Please confirm.",
+    notify: { serverchan_sendkey: "SCT..." }
+  }
+});
+// result.data.text / result.data.payload are already decrypted
+```
+
+```bash
+ASK4ME_E2EE_PASSWORD='...' ask4me-cli -h https://your-domain.com -k a4m_... \
+  --title 'Approve deploy' --body 'Please confirm.' --notify-sendkey 'SCT...'
+```
+
+- Share the password **out of band**, never in the same message as the notification link; otherwise encryption is pointless.
+- The server does not store the password; there is no recovery.
+- The page JS is served by the server, so a compromised server could replace it and steal the password. E2EE protects databases/backups/push channels/logs, not a malicious server. Metadata (who, when, size, channel) remains visible.
 
 ## Quickstart: nonStream mode + raw requests (curl)
 
@@ -651,7 +727,7 @@ ask4me-cli -h https://your-domain.com -k a4m_trial2026_xxxxxxxxxxxxxxxx \
 
 ## Build from source (optional)
 
-This repository includes a GoReleaser config ([.goreleaser.yaml](./.goreleaser.yaml)). If you only want to cross-compile manually:
+Requires Go **1.27.3+** (declared in `go.mod`; Go 1.21+ will auto-download the matching toolchain). This repository includes a GoReleaser config ([.goreleaser.yaml](./.goreleaser.yaml)). If you only want to cross-compile manually:
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ask4me-linux-amd64 .

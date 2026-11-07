@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./e2ee.js": "./e2ee.js"
   },
   "engines": {
     "node": ">=18"

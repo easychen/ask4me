@@ -22,6 +22,20 @@ const renderers = [
   { tester: longTextDisplayTester, renderer: LongTextDisplayRenderer },
 ];
 
+type E2EEApi = {
+  deriveKey: (password: string, salt: string, iterations: number) => Promise<CryptoKey>;
+  decryptText: (token: string, key: CryptoKey) => Promise<string>;
+  decryptJSONValue: (value: unknown, key: CryptoKey) => Promise<unknown>;
+  decryptStringsDeep: <T = unknown>(value: T, key: CryptoKey) => Promise<T>;
+  encryptJSON: (value: unknown, key: CryptoKey) => Promise<string>;
+};
+
+declare global {
+  interface Window {
+    Ask4MeE2EE?: E2EEApi;
+  }
+}
+
 type MountOptions = {
   specUrl: string;
   appId?: string;
@@ -29,6 +43,10 @@ type MountOptions = {
   submitBtnId?: string;
   payloadInputId?: string;
   formId?: string;
+  cryptoKey?: CryptoKey;
+  e2eeAnswers?: boolean;
+  onReady?: () => void;
+  onError?: (message: string) => void;
 };
 
 function getEl<T extends HTMLElement>(id: string | undefined): T | null {
@@ -51,10 +69,12 @@ export function mount(opts: MountOptions) {
   const form = getEl<HTMLFormElement>(formId);
 
   function showError(message: string) {
-    if (!elErr) return;
-    elErr.className = "err";
-    elErr.textContent = message;
-    elErr.style.display = "block";
+    if (elErr) {
+      elErr.className = "err";
+      elErr.textContent = message;
+      elErr.style.display = "block";
+    }
+    opts.onError?.(message);
   }
 
   function App() {
@@ -77,15 +97,38 @@ export function mount(opts: MountOptions) {
             showError("Invalid form spec.");
             return;
           }
-          setSchema(spec.schema);
-          if (spec.uischema) setUiSchema(spec.uischema);
-          if (spec.data !== undefined && spec.data !== null) setData(spec.data);
-          if (typeof spec.submit_label === "string" && spec.submit_label.trim()) {
-            setSubmitLabel(spec.submit_label.trim());
+
+          let schema = spec.schema;
+          let uischema = spec.uischema;
+          let data = spec.data;
+          let submitLabelValue = spec.submit_label;
+
+          if (opts.cryptoKey) {
+            const api = window.Ask4MeE2EE;
+            if (!api) {
+              showError("Failed to load decryptor.");
+              return;
+            }
+            schema = await api.decryptStringsDeep(schema, opts.cryptoKey);
+            if (uischema) uischema = await api.decryptStringsDeep(uischema, opts.cryptoKey);
+            if (data !== undefined && data !== null) {
+              data = await api.decryptJSONValue(data, opts.cryptoKey);
+            }
+            if (typeof submitLabelValue === "string" && submitLabelValue.trim()) {
+              submitLabelValue = await api.decryptStringsDeep(submitLabelValue, opts.cryptoKey);
+            }
+          }
+
+          setSchema(schema);
+          if (uischema) setUiSchema(uischema);
+          if (data !== undefined && data !== null) setData(data);
+          if (typeof submitLabelValue === "string" && submitLabelValue.trim()) {
+            setSubmitLabel(submitLabelValue.trim());
           }
           if (typeof spec.renderer === "string" && spec.renderer.trim() && spec.renderer.trim() !== "vanilla") {
             showError("Unsupported form renderer.");
           }
+          setTimeout(() => opts.onReady?.(), 0);
         } catch {
           showError("Failed to load form spec.");
         }
@@ -110,6 +153,32 @@ export function mount(opts: MountOptions) {
       }
     }, [data]);
 
+    useEffect(() => {
+      if (!form) return;
+      const onSubmit = (e: Event) => {
+        if (!opts.e2eeAnswers || !opts.cryptoKey) {
+          try {
+            if (elPayload && !elPayload.value) elPayload.value = "{}";
+          } catch {}
+          return;
+        }
+        e.preventDefault();
+        const api = window.Ask4MeE2EE;
+        if (!api) {
+          showError("Failed to load decryptor.");
+          return;
+        }
+        api.encryptJSON(data ?? {}, opts.cryptoKey)
+          .then((token) => {
+            if (elPayload) elPayload.value = JSON.stringify(token);
+            form.submit();
+          })
+          .catch(() => showError("加密失败，请重试。"));
+      };
+      form.addEventListener("submit", onSubmit);
+      return () => form.removeEventListener("submit", onSubmit);
+    }, [form, data, elPayload, opts.cryptoKey, opts.e2eeAnswers]);
+
     if (!schema) {
       return React.createElement("div", null, "Loading...");
     }
@@ -124,14 +193,6 @@ export function mount(opts: MountOptions) {
         if (data !== undefined) setData(data);
         if (Array.isArray(errors)) setErrors(errors);
       }
-    });
-  }
-
-  if (form) {
-    form.addEventListener("submit", () => {
-      try {
-        if (elPayload && !elPayload.value) elPayload.value = "{}";
-      } catch {}
     });
   }
 

@@ -57,7 +57,7 @@ func createTestRequest(t *testing.T, s *server, id, keyHash, ip, status string) 
 		context.Background(), id, "title", "body", "", status,
 		time.Now().Add(time.Hour),
 		sql.NullString{}, sql.NullString{}, sql.NullString{}, sql.NullString{}, sql.NullString{},
-		keyHash, ip,
+		keyHash, ip, false, "", 0, false,
 	)
 	if err != nil {
 		t.Fatalf("create request %s: %v", id, err)

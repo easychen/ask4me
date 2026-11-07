@@ -31,3 +31,9 @@ terminal_cache_seconds: 60
 #     global_requests_per_day: 5000
 #     trust_proxy: false
 #   allowed_apprise_schemes: ["schan","tgram","discord","slack","ntfy","gotify"]
+
+# End-to-end encryption (off by default; requires https, localhost allowed for dev).
+# e2ee:
+#   enabled: true
+#   kdf_iterations: 310000
+#   encrypt_answers_default: true

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/jsonforms.ts --bundle --minify --format=iife --global-name=Ask4MeJsonForms --target=es2020 --outfile=dist/jsonforms.bundle.js"
+    "build": "esbuild src/jsonforms.ts --bundle --minify --format=iife --global-name=Ask4MeJsonForms --target=es2020 --outfile=dist/jsonforms.bundle.js && esbuild src/e2ee.ts --bundle --minify --format=iife --global-name=Ask4MeE2EE --target=es2020 --outfile=dist/e2ee.bundle.js"
   },
   "dependencies": {
     "@jsonforms/core": "^3.5.1",

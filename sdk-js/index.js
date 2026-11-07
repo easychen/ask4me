@@ -1,3 +1,5 @@
+import { preparePayload, decryptResult, deriveKey } from "./e2ee.js";
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -47,7 +49,7 @@ async function* sseDataIterator(response) {
   }
 }
 
-export function createClient({ endpoint, apiKey, fetchImpl } = {}) {
+export function createClient({ endpoint, apiKey, e2ee, fetchImpl } = {}) {
   if (!endpoint) {
     throw new Error("endpoint is required");
   }
@@ -64,6 +66,7 @@ export function createClient({ endpoint, apiKey, fetchImpl } = {}) {
       ask({
         endpoint,
         apiKey,
+        e2ee,
         payload,
         fetchImpl: fetchFn,
         ...options
@@ -75,6 +78,7 @@ export async function ask({
   endpoint,
   apiKey,
   payload,
+  e2ee,
   onEvent,
   signal,
   maxRetries = Infinity,
@@ -93,6 +97,19 @@ export async function ask({
   let lastEventId = initialLastEventId ?? null;
   let attempt = 0;
   let backoff = initialBackoffMs;
+
+  let e2eeKey = null;
+  let requestPayload = payload;
+  if (e2ee) {
+    if (!e2ee.password) throw new Error("e2ee.password is required");
+    if (!requestId) {
+      const prepared = preparePayload(payload ?? {}, e2ee.password, e2ee);
+      requestPayload = prepared.payload;
+      e2eeKey = prepared.key;
+    } else if (e2ee.salt && e2ee.iterations) {
+      e2eeKey = deriveKey(e2ee.password, e2ee.salt, e2ee.iterations);
+    }
+  }
 
   const events = [];
   let done = false;
@@ -116,7 +133,7 @@ export async function ask({
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`
       },
-      body: requestId ? null : JSON.stringify(payload ?? {}),
+      body: requestId ? null : JSON.stringify(requestPayload ?? {}),
       signal
     });
 
@@ -145,6 +162,16 @@ export async function ask({
         if (ev && typeof ev === "object") {
           if (ev.request_id && !requestId) requestId = ev.request_id;
           if (ev.id) lastEventId = ev.id;
+
+          if (e2ee && e2ee.password && ev.type === "request.created" && ev.data && ev.data.e2ee) {
+            if (!e2eeKey) {
+              e2eeKey = deriveKey(e2ee.password, ev.data.e2ee.salt, ev.data.e2ee.iterations);
+            }
+          }
+          if (e2eeKey && ev.type === "user.submitted" && ev.data) {
+            ev = { ...ev, data: decryptResult(ev.data, e2eeKey) };
+          }
+
           events.push(ev);
           if (typeof onEvent === "function") onEvent(ev);
           if (ev.type === "user.submitted" || ev.type === "request.expired") {

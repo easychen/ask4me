@@ -21,6 +21,7 @@ function printHelp() {
       "  --expires <seconds>  expires_in_seconds",
       "  --notify-sendkey <s> ServerChan SendKey for this request (multi-user mode)",
       "  --apprise-url <url>  Apprise URL for this request; repeatable",
+      "  --e2ee-password <p>  Encrypt this request end-to-end (or set ASK4ME_E2EE_PASSWORD)",
       "  --json               Print final result as JSON",
       "  --help               Show help",
       ""
@@ -49,7 +50,8 @@ function normalizeArgv(argv) {
     "host",
     "key",
     "notify-sendkey",
-    "apprise-url"
+    "apprise-url",
+    "e2ee-password"
   ]);
   return argv.map((a) => {
     if (a.startsWith("--")) return a;
@@ -74,6 +76,7 @@ async function main() {
       expires: { type: "string" },
       "notify-sendkey": { type: "string" },
       "apprise-url": { type: "string", multiple: true },
+      "e2ee-password": { type: "string" },
       json: { type: "boolean" },
       help: { type: "boolean" }
     },
@@ -96,6 +99,7 @@ async function main() {
   const expiresInSeconds = toIntOrNull(values.expires);
   const notifySendKey = values["notify-sendkey"];
   const appriseURLs = values["apprise-url"] ?? [];
+  const e2eePassword = values["e2ee-password"] || process.env.ASK4ME_E2EE_PASSWORD;
   const notify = {
     ...(notifySendKey ? { serverchan_sendkey: notifySendKey } : {}),
     ...(appriseURLs.length > 0 ? { apprise_urls: appriseURLs } : {})
@@ -112,6 +116,7 @@ async function main() {
     endpoint,
     apiKey,
     payload,
+    e2ee: e2eePassword ? { password: e2eePassword } : undefined,
     onEvent: (ev) => {
       process.stdout.write(`${JSON.stringify(ev)}\n`);
     }

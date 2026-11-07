@@ -94,6 +94,12 @@ docker pull easychen/ask4me:latest
 docker pull ghcr.io/easychen/ask4me:latest
 ```
 
+自己构建极简镜像（`scratch`，无 shell，只留静态二进制 + CA + zoneinfo）：
+
+```bash
+docker build --target slim -t ask4me:slim .
+```
+
 使用 env 文件启动：
 
 ```bash
@@ -119,6 +125,8 @@ docker run -d \
 ```
 
 SQLite 数据库存放在容器内的 `/data/ask4me.db`，挂载宿主机目录可在重启后保留数据。
+
+Ubuntu 部署教程（Docker Compose + Caddy 自动 HTTPS，标准镜像和 `scratch` 极简镜像）：[docs/ubuntu-deploy.md](docs/ubuntu-deploy.md)。
 
 ## 多用户 / 试用模式（默认关闭）
 
@@ -204,6 +212,74 @@ curl -sS --max-time 120 -X POST 'https://your-domain.com/v1/ask' \
 `ASK4ME_MULTI_USER_ENABLED`、`ASK4ME_MULTI_USER_MODE`、`ASK4ME_MULTI_USER_KEYS`、`ASK4ME_MULTI_USER_INVITE_CODES`、`ASK4ME_MULTI_USER_REQUESTS_PER_DAY`、`ASK4ME_MULTI_USER_MAX_PENDING`、`ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS`、`ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR`、`ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY`、`ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY`、`ASK4ME_MULTI_USER_TRUST_PROXY`、`ASK4ME_ALLOWED_APPRISE_SCHEMES`。
 
 > E2EE（端到端加密）是下一阶段，当前版本尚未实现；配置里暂时没有 `e2ee` 段。
+
+## 端到端加密（E2EE，默认关闭）
+
+E2EE 开启后，发起方在 SDK/CLI 里用口令加密，服务端只存密文；回答也在浏览器里加密，发起方收到后解密。服务端不接触密码，也不做加解密。完整格式、威胁模型和测试向量见 [E2EE.md](E2EE.md)。
+
+### 配置
+
+```yaml
+e2ee:
+  enabled: true
+  kdf_iterations: 310000
+  encrypt_answers_default: true
+```
+
+- `enabled: true` 只是允许这台服务器使用 E2EE，**不强制**任何请求；每个请求自己带 `e2ee.enabled: true` 才加密，其他请求照常明文工作。
+- 同一个多用户实例上可以混用：愿意加密的用户加密，不愿意的用户不加密。
+- 必须 HTTPS（`http://localhost` / `127.0.0.1` 仅供开发）。
+- 默认关闭；服务端关闭时带 `e2ee` 的请求会返回 `400`。
+
+### 请求形态
+
+```json
+{
+  "title": "enc:v1:...",
+  "body": "enc:v1:...",
+  "jsonforms": {
+    "schema": { "type": "object", "properties": { "name": { "type": "string", "title": "enc:v1:..." } } },
+    "data": "enc:v1:..."
+  },
+  "e2ee": {
+    "enabled": true,
+    "salt": "base64url-16B",
+    "iterations": 310000,
+    "answers": true
+  },
+  "notify": { "serverchan_sendkey": "SCT..." }
+}
+```
+
+- 结构（`schema` / `uischema` / MCD 块）保持明文，所以 JSON Forms 还能正常渲染。
+- 正文、标题、表单展示文本、初始 `data`、回答是密文。
+- 按钮 `action`、MCD 的 value 仍是明文（ServerChan Action Link 也依赖它）。
+- 通知里只显示“加密消息 + 链接”，不会带正文。
+
+### SDK / CLI
+
+```js
+const { result } = await ask({
+  endpoint: "https://your-domain.com/v1/ask",
+  apiKey: "a4m_...",
+  e2ee: { password: "shared-out-of-band" },
+  payload: {
+    title: "审批",
+    body: "请确认发布",
+    notify: { serverchan_sendkey: "SCT..." }
+  }
+});
+// result.data.text / result.data.payload 已由 SDK 解密
+```
+
+```bash
+ASK4ME_E2EE_PASSWORD='...' ask4me-cli -h https://your-domain.com -k a4m_... \
+  --title '审批' --body '请确认发布' --notify-sendkey 'SCT...'
+```
+
+- 口令必须**另行**告知回答者，不要和通知链接放在同一条消息里；否则加密没有意义。
+- 服务端不保存口令，忘记后无法找回。
+- 页面 JS 由服务端提供，服务端被攻破后可以替换 JS 窃取口令；E2EE 防的是数据库/备份/推送链路/日志，不是恶意服务端。元数据（谁、何时、多大、哪个渠道）仍然可见。
 
 ## 最简单用法：nonStream 模式 + 裸请求（curl）
 
@@ -655,7 +731,7 @@ ask4me-cli -h https://your-domain.com -k a4m_trial2026_xxxxxxxxxxxxxxxx \
 
 ## 从源码编译（可选）
 
-本仓库提供了 GoReleaser 配置（[.goreleaser.yaml](./.goreleaser.yaml)）。如果你只想手动交叉编译，也可以用：
+需要 Go **1.27.3+**（`go.mod` 已声明；Go 1.21+ 会自动下载对应 toolchain）。本仓库提供了 GoReleaser 配置（[.goreleaser.yaml](./.goreleaser.yaml)）。如果你只想手动交叉编译，也可以用：
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/ask4me-linux-amd64 .
