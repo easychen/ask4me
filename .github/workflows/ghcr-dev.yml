@@ -66,6 +66,48 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Smoke test standard image (amd64)
+        run: |
+          set -euo pipefail
+          name=ask4me-smoke
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$name" --platform linux/amd64 \
+            -e ASK4ME_BASE_URL=http://127.0.0.1:18080 \
+            -e ASK4ME_API_KEY=smoke-key \
+            -e ASK4ME_SQLITE_PATH=/data/smoke.db \
+            -e ASK4ME_LISTEN_ADDR=:8080 \
+            -p 18080:8080 \
+            "ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}"
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/v1/ask || true)
+            if [ "$code" = "401" ]; then break; fi
+            sleep 1
+          done
+          docker logs "$name"
+          test "$code" = "401"
+
+      - name: Smoke test slim image (amd64)
+        run: |
+          set -euo pipefail
+          name=ask4me-slim-smoke
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$name" --platform linux/amd64 \
+            -e ASK4ME_BASE_URL=http://127.0.0.1:18081 \
+            -e ASK4ME_API_KEY=smoke-key \
+            -e ASK4ME_SQLITE_PATH=/data/smoke.db \
+            -e ASK4ME_LISTEN_ADDR=:8080 \
+            -p 18081:8080 \
+            "ghcr.io/${{ github.repository }}:${{ env.IMAGE_TAG }}-slim"
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18081/v1/ask || true)
+            if [ "$code" = "401" ]; then break; fi
+            sleep 1
+          done
+          docker logs "$name"
+          test "$code" = "401"
+
       - name: Summary
         run: |
           {
