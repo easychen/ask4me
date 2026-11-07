@@ -128,6 +128,8 @@ SQLite 数据库存放在容器内的 `/data/ask4me.db`，挂载宿主机目录�
 
 Ubuntu 部署教程（Docker Compose + Caddy 自动 HTTPS，标准镜像和 `scratch` 极简镜像）：[docs/ubuntu-deploy.md](docs/ubuntu-deploy.md)。
 
+多架构 GHCR 镜像的 Compose 示例：[docs/docker-compose.ghcr.yml](docs/docker-compose.ghcr.yml)。
+
 ## 多用户 / 试用模式（默认关闭）
 
 默认仍是单用户：一个全局 `api_key` + 一套全局通知渠道。把 `multi_user.enabled` 设为 `true` 后，服务变成一个**无账号的多租户模式**：每个 API key 就是一个租户，key 只用来做请求隔离和配额，不需要注册/登录。

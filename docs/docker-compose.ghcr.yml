@@ -1,0 +1,103 @@
+# Improved Ask4Me compose for the GHCR multi-arch images.
+#
+# Images:
+#   standard: ghcr.io/easychen/ask4me@sha256:96ab1529c8648914ce9f48bdff34415e5a979d6833ec5b3cfc7bfa27fd6a8e66
+#             tag: ghcr.io/easychen/ask4me:feat-e2ee
+#   slim:     ghcr.io/easychen/ask4me@sha256:cfb581d30197a5c0cc7b4b7764fa8007d30dd12bfb2185671a8e6d2ca3d08053
+#             tag: ghcr.io/easychen/ask4me:feat-e2ee-slim
+#
+# Both are multi-arch (linux/amd64 + linux/arm64) and were smoke-tested on amd64.
+# Do NOT add `platform:`; let Docker pick the right architecture on x86_64/arm64.
+#
+# This file assumes a host-level Caddy/Nginx proxies to 127.0.0.1:8080.
+# If your reverse proxy is another Compose service, remove `ports` and use the
+# `networks` + `expose` block at the bottom.
+
+services:
+  ask4me:
+    # standard image (has a shell + docker-entrypoint.sh, easiest to debug)
+    image: ghcr.io/easychen/ask4me@sha256:96ab1529c8648914ce9f48bdff34415e5a979d6833ec5b3cfc7bfa27fd6a8e66
+
+    # slim alternative (scratch, no shell, runs as 65532; see data permissions)
+    # image: ghcr.io/easychen/ask4me@sha256:cfb581d30197a5c0cc7b4b7764fa8007d30dd12bfb2185671a8e6d2ca3d08053
+
+    # container_name: ask4me   # optional; service names are already stable in Compose
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+    # Bind to loopback only; the host reverse proxy is the public entrypoint.
+    # Never publish 8080 to 0.0.0.0.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      # Keep the existing DB filename to avoid switching away from older data.
+      # standard image writes as root; slim writes as 65532.
+      # For slim only:
+      #   sudo chown -R 65532:65532 /data/easy/ask4me2-data
+      - /data/easy/ask4me2-data:/data
+
+    environment:
+      # Required: public HTTPS origin used to build interaction links.
+      ASK4ME_BASE_URL: ${ASK4ME_BASE_URL:?set ASK4ME_BASE_URL in .env}
+
+      # Multi-user trial mode: every API key is a tenant; no accounts.
+      ASK4ME_MULTI_USER_ENABLED: "true"
+      ASK4ME_MULTI_USER_MODE: "open"
+      ASK4ME_MULTI_USER_INVITE_CODES: ${ASK4ME_MULTI_USER_INVITE_CODES:-trial-2026}
+      ASK4ME_MULTI_USER_REQUESTS_PER_DAY: ${ASK4ME_MULTI_USER_REQUESTS_PER_DAY:-200}
+      ASK4ME_MULTI_USER_MAX_PENDING: ${ASK4ME_MULTI_USER_MAX_PENDING:-5}
+      ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS: ${ASK4ME_MULTI_USER_MAX_EXPIRES_IN_SECONDS:-86400}
+      ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR: ${ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR:-60}
+      ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY: ${ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY:-10}
+      ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY: ${ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY:-5000}
+      # Set true only when the reverse proxy overwrites X-Forwarded-For.
+      ASK4ME_MULTI_USER_TRUST_PROXY: "true"
+
+      # Optional E2EE: enabled here means "allowed", NOT forced.
+      # Individual requests opt in with `e2ee.enabled: true`.
+      # Requires ASK4ME_BASE_URL to be https.
+      ASK4ME_E2EE_ENABLED: ${ASK4ME_E2EE_ENABLED:-true}
+      ASK4ME_E2EE_KDF_ITERATIONS: ${ASK4ME_E2EE_KDF_ITERATIONS:-310000}
+      ASK4ME_E2EE_ENCRYPT_ANSWERS_DEFAULT: ${ASK4ME_E2EE_ENCRYPT_ANSWERS_DEFAULT:-true}
+
+      # In multi-user mode ASK4ME_API_KEY is ignored; leave it empty.
+      # For single-user mode, set it and switch MULTI_USER_ENABLED to false.
+      ASK4ME_API_KEY: ${ASK4ME_API_KEY:-}
+
+      # Legacy/single-user global channel. In multi-user mode clients must pass
+      # `notify` per request; these globals are ignored.
+      # ASK4ME_SERVERCHAN_SENDKEY: ${ASK4ME_SERVERCHAN_SENDKEY:-}
+      # ASK4ME_APPRISE_URLS: ${ASK4ME_APPRISE_URLS:-}
+
+      ASK4ME_SQLITE_PATH: /data/ask4me2.db
+      ASK4ME_LISTEN_ADDR: ":8080"
+      ASK4ME_DEFAULT_EXPIRES_IN_SECONDS: ${ASK4ME_DEFAULT_EXPIRES_IN_SECONDS:-3600}
+      ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS: ${ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS:-15}
+      ASK4ME_TERMINAL_CACHE_SECONDS: ${ASK4ME_TERMINAL_CACHE_SECONDS:-60}
+      TZ: ${TZ:-Asia/Shanghai}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Optional hardening for the standard image (it writes only /data and /tmp):
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+
+    # If Caddy runs as another Compose service on a shared network,
+    # remove `ports` above and use this:
+    # networks:
+    #   - proxy
+    # expose:
+    #   - "8080"
+
+# networks:
+#   proxy:
+#     external: true

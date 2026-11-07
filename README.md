@@ -125,6 +125,8 @@ The SQLite database is stored at `/data/ask4me.db` inside the container — moun
 
 Ubuntu deployment guide (Chinese; Docker Compose + Caddy, standard and `scratch` slim images): [docs/ubuntu-deploy.md](docs/ubuntu-deploy.md).
 
+Multi-arch GHCR Compose example: [docs/docker-compose.ghcr.yml](docs/docker-compose.ghcr.yml).
+
 ## Multi-user / trial mode (off by default)
 
 The default is still single-user: one global `api_key` and one global notification channel. Set `multi_user.enabled: true` to run an **accountless multi-tenant** instance: each API key is a tenant, used only for request isolation and quotas — no registration or login.

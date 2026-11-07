@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/e2ee
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
     inputs:
       tag:

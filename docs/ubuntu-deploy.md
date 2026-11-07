@@ -171,6 +171,17 @@ RUN apk add --no-cache python3 py3-pip \
 
 ## 5. 构建镜像（标准 / 极轻量）
 
+### 直接用 GHCR 镜像
+
+如果不想在服务器上构建，可以直接拉多架构镜像（`linux/amd64` + `linux/arm64`，x86 服务器会自动选 amd64）：
+
+```bash
+docker pull ghcr.io/easychen/ask4me:feat-e2ee
+docker pull ghcr.io/easychen/ask4me:feat-e2ee-slim
+```
+
+固定 digest 的示例见 [docker-compose.ghcr.yml](docker-compose.ghcr.yml)。`feat-e2ee` 是开发分支 tag；正式发布请用 release tag。
+
 ### 标准镜像（推荐先跑通）
 
 ```bash
