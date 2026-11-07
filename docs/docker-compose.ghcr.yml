@@ -1,47 +1,34 @@
-# Improved Ask4Me compose for the GHCR multi-arch images.
-#
-# Images:
-#   standard: ghcr.io/easychen/ask4me@sha256:603ccc8b02dce51bca66b99c36014820a6f39a7b8b6df8f8f7bafd11886f8f91
-#             tag: ghcr.io/easychen/ask4me:feat-e2ee
-#   slim:     ghcr.io/easychen/ask4me@sha256:43bec9ba55b2bd11f0f44132a82c2a37cab9117eeff5ceff4b75bc362ae1f444
-#             tag: ghcr.io/easychen/ask4me:feat-e2ee-slim
-#
-# Both are multi-arch (linux/amd64 + linux/arm64) and were smoke-tested on amd64.
-# Do NOT add `platform:`; let Docker pick the right architecture on x86_64/arm64.
-#
-# This file assumes a host-level Caddy/Nginx proxies to 127.0.0.1:8080.
-# If your reverse proxy is another Compose service, remove `ports` and use the
-# `networks` + `expose` block at the bottom.
-
 services:
   ask4me:
-    # standard image (has a shell + docker-entrypoint.sh, easiest to debug)
+    # 多架构镜像（linux/amd64 + linux/arm64），x86 服务器自动拉 amd64。
+    # 不要加 platform:，否则会把 x86 强行跑成 arm64 模拟。
     image: ghcr.io/easychen/ask4me@sha256:603ccc8b02dce51bca66b99c36014820a6f39a7b8b6df8f8f7bafd11886f8f91
-
-    # slim alternative (scratch, no shell, runs as 65532; see data permissions)
+    # slim 版（scratch，无 shell，UID 65532，体积约 6MB）：
     # image: ghcr.io/easychen/ask4me@sha256:43bec9ba55b2bd11f0f44132a82c2a37cab9117eeff5ceff4b75bc362ae1f444
 
-    # container_name: ask4me   # optional; service names are already stable in Compose
+    container_name: ask4me
     restart: unless-stopped
     stop_grace_period: 30s
 
-    # Bind to loopback only; the host reverse proxy is the public entrypoint.
-    # Never publish 8080 to 0.0.0.0.
+    # 宿主机 Caddy/Nginx 反代到 127.0.0.1:8080 时保留。
+    # 如果反代也是 Docker 服务，删掉 ports，改用文件底部的 networks + expose。
     ports:
       - "127.0.0.1:8080:8080"
 
     volumes:
-      # Keep the existing DB filename to avoid switching away from older data.
-      # standard image writes as root; slim writes as 65532.
-      # For slim only:
+      # 沿用原来的数据目录和 DB 文件名，避免丢旧数据。
+      # 标准镜像以 root 运行；slim 以 65532 运行，slim 需要：
       #   sudo chown -R 65532:65532 /data/easy/ask4me2-data
       - /data/easy/ask4me2-data:/data
 
     environment:
-      # Required: public HTTPS origin used to build interaction links.
+      # 必填：外部可访问地址。开 E2EE 时必须是 https://
       ASK4ME_BASE_URL: ${ASK4ME_BASE_URL:?set ASK4ME_BASE_URL in .env}
+      ASK4ME_LISTEN_ADDR: ":8080"
+      ASK4ME_SQLITE_PATH: /data/ask4me2.db
+      TZ: ${TZ:-Asia/Shanghai}
 
-      # Multi-user trial mode: every API key is a tenant; no accounts.
+      # 多用户试用：key = 租户，无账号
       ASK4ME_MULTI_USER_ENABLED: "true"
       ASK4ME_MULTI_USER_MODE: "open"
       ASK4ME_MULTI_USER_INVITE_CODES: ${ASK4ME_MULTI_USER_INVITE_CODES:-trial-2026}
@@ -51,31 +38,27 @@ services:
       ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR: ${ASK4ME_MULTI_USER_PER_IP_REQUESTS_PER_HOUR:-60}
       ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY: ${ASK4ME_MULTI_USER_PER_IP_NEW_KEYS_PER_DAY:-10}
       ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY: ${ASK4ME_MULTI_USER_GLOBAL_REQUESTS_PER_DAY:-5000}
-      # Set true only when the reverse proxy overwrites X-Forwarded-For.
+      # 仅当反代正确覆盖 X-Forwarded-For 时开；直连请改 false
       ASK4ME_MULTI_USER_TRUST_PROXY: "true"
 
-      # Optional E2EE: enabled here means "allowed", NOT forced.
-      # Individual requests opt in with `e2ee.enabled: true`.
-      # Requires ASK4ME_BASE_URL to be https.
+      # E2EE 只是“允许”，不强制；请求带 e2ee 才加密。
+      # BASE_URL 不是 https 时把这里改成 false，否则服务会启动失败。
       ASK4ME_E2EE_ENABLED: ${ASK4ME_E2EE_ENABLED:-true}
       ASK4ME_E2EE_KDF_ITERATIONS: ${ASK4ME_E2EE_KDF_ITERATIONS:-310000}
       ASK4ME_E2EE_ENCRYPT_ANSWERS_DEFAULT: ${ASK4ME_E2EE_ENCRYPT_ANSWERS_DEFAULT:-true}
 
-      # In multi-user mode ASK4ME_API_KEY is ignored; leave it empty.
-      # For single-user mode, set it and switch MULTI_USER_ENABLED to false.
+      # 多用户下 ASK4ME_API_KEY 会被忽略；留空即可。
+      # 如果要退回单用户：MULTI_USER_ENABLED=false，并填 API_KEY 和全局渠道。
       ASK4ME_API_KEY: ${ASK4ME_API_KEY:-}
 
-      # Legacy/single-user global channel. In multi-user mode clients must pass
-      # `notify` per request; these globals are ignored.
+      # 多用户下客户端必须每次请求带 notify；下面两个全局渠道不生效。
       # ASK4ME_SERVERCHAN_SENDKEY: ${ASK4ME_SERVERCHAN_SENDKEY:-}
       # ASK4ME_APPRISE_URLS: ${ASK4ME_APPRISE_URLS:-}
 
-      ASK4ME_SQLITE_PATH: /data/ask4me2.db
-      ASK4ME_LISTEN_ADDR: ":8080"
+      # 调优
       ASK4ME_DEFAULT_EXPIRES_IN_SECONDS: ${ASK4ME_DEFAULT_EXPIRES_IN_SECONDS:-3600}
       ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS: ${ASK4ME_SSE_HEARTBEAT_INTERVAL_SECONDS:-15}
       ASK4ME_TERMINAL_CACHE_SECONDS: ${ASK4ME_TERMINAL_CACHE_SECONDS:-60}
-      TZ: ${TZ:-Asia/Shanghai}
 
     logging:
       driver: json-file
@@ -86,13 +69,12 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    # Optional hardening for the standard image (it writes only /data and /tmp):
+    # 进一步加固（标准镜像只写 /data 和 /tmp）：
     # read_only: true
     # tmpfs:
     #   - /tmp
 
-    # If Caddy runs as another Compose service on a shared network,
-    # remove `ports` above and use this:
+    # 如果 Caddy 是另一个 Compose 服务，改用这个，删掉上面的 ports：
     # networks:
     #   - proxy
     # expose:
