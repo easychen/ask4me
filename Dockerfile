@@ -32,7 +32,7 @@ USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/ask4me"]
 
-FROM alpine:3.21
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /data
 COPY --from=go-builder /app/ask4me /usr/local/bin/ask4me

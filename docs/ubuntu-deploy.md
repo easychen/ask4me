@@ -191,7 +191,7 @@ cd /opt/ask4me
 docker build -t ask4me:local .
 ```
 
-- 基于 `alpine:3.21`，带 `docker-entrypoint.sh`，会把环境变量写成 `/data/.env`。
+- 基于 `alpine:3.24`（支持到 2028-06），带 `docker-entrypoint.sh`，会把环境变量写成 `/data/.env`。
 - 方便 `docker exec` 进去看文件，排障简单。
 - 体积比 slim 大几 MB。
 
