@@ -96,6 +96,8 @@ cp .env.example .env
 chmod 600 .env
 ```
 
+多用户 + 可选 E2EE 的完整环境变量模板见 [env.multi-user.example](env.multi-user.example)。
+
 ### 4.1 单用户（自己用）
 
 ```dotenv
