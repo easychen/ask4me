@@ -2,9 +2,9 @@ services:
   ask4me:
     # 多架构镜像（linux/amd64 + linux/arm64），x86 服务器自动拉 amd64。
     # 不要加 platform:，否则会把 x86 强行跑成 arm64 模拟。
-    image: ghcr.io/easychen/ask4me@sha256:29ab778600459abcb358bddef6f005cab5a855ba929b3c551a5b98d4343dcb36
+    image: ghcr.io/easychen/ask4me@sha256:a7495b826313d7b2c3b2b912b6c62603dd0201e2ff253f193017c34ccab59bcf
     # slim 版（scratch，无 shell，UID 65532，体积约 6MB）：
-    # image: ghcr.io/easychen/ask4me@sha256:4a79dec1cedba79c630e13e0e4692e90d26e543209a71bbf05ea7799dd3a07f6
+    # image: ghcr.io/easychen/ask4me@sha256:df8e9c512a2af1b346f19e7bb34a8e0428ac1f8bc2d953a0c3cd4d0fa462b446
 
     container_name: ask4me
     restart: unless-stopped
